@@ -33,7 +33,6 @@ export interface IngestStatus {
   error?: string;
 }
 
-type SetStatus = (s: IngestStatus) => void;
 type ProgressFn = (processed: number, total: number) => void;
 
 interface ParsedMeta {
