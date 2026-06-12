@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Viewport constraints: prevent mobile overscroll / pull-to-refresh (spec Phase 1) */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior-y: none;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  @apply bg-app text-main;
+}
+
+#root {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+/* ---------------- App theme tokens (RGB triplets for Tailwind) ---------------- */
+
+/* Dark mode (default) */
+:root {
+  --c-app: 9 9 11;
+  --c-surface: 24 24 27;
+  --c-surface2: 39 39 42;
+  --c-edge: 39 39 42;
+  --c-text: 244 244 245;
+  --c-muted: 161 161 170;
+  --c-faint: 113 113 122;
+}
+
+/* Light mode */
+.mode-light {
+  --c-app: 250 250 249;
+  --c-surface: 255 255 255;
+  --c-surface2: 231 229 228;
+  --c-edge: 214 211 209;
+  --c-text: 28 25 23;
+  --c-muted: 87 83 78;
+  --c-faint: 168 162 158;
+}
+
+/* Accent palettes (set via data-accent on <html>) */
+:root,
+[data-accent='emerald'] {
+  --c-accent: 16 185 129;
+  --c-accent-hov: 52 211 153;
+  --c-on-accent: 9 9 11;
+}
+
+[data-accent='red'] {
+  --c-accent: 239 68 68;
+  --c-accent-hov: 248 113 113;
+  --c-on-accent: 255 255 255;
+}
+
+[data-accent='sky'] {
+  --c-accent: 56 189 248;
+  --c-accent-hov: 125 211 252;
+  --c-on-accent: 9 9 11;
+}
+
+[data-accent='blue'] {
+  --c-accent: 37 99 235;
+  --c-accent-hov: 59 130 246;
+  --c-on-accent: 255 255 255;
+}
+
+[data-accent='pink'] {
+  --c-accent: 236 72 153;
+  --c-accent-hov: 244 114 182;
+  --c-on-accent: 255 255 255;
+}
+
+[data-accent='purple'] {
+  --c-accent: 139 92 246;
+  --c-accent-hov: 167 139 250;
+  --c-on-accent: 255 255 255;
+}
+
+[data-accent='orange'] {
+  --c-accent: 249 115 22;
+  --c-accent-hov: 251 146 60;
+  --c-on-accent: 9 9 11;
+}
+
+[data-accent='amber'] {
+  --c-accent: 245 158 11;
+  --c-accent-hov: 251 191 36;
+  --c-on-accent: 9 9 11;
+}
+
+/* ---------- Reader surface themes (CSS variables for ReaderViewport) ---------- */
+
+.theme-dark {
+  --reader-bg: #09090b;
+  --reader-fg: #d4d4d8;
+}
+
+.theme-light {
+  --reader-bg: #fafaf9;
+  --reader-fg: #292524;
+}
+
+.theme-sepia {
+  --reader-bg: #f1e7d0;
+  --reader-fg: #4b3a2a;
+}
