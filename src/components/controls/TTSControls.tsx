@@ -43,7 +43,12 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
         aria-label={status === 'playing' ? 'Pause' : 'Resume'}
         className="rounded-full bg-accent p-2.5 text-on-accent transition-colors hover:bg-accent-hov"
       >
-        {status === 'playing' ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+        {status === 'playing' ? (
+          <Pause className="h-5 w-5" />
+        ) : (
+          // translate compensates the triangle's optical left bias
+          <Play className="h-5 w-5 translate-x-[1.5px]" />
+        )}
       </button>
       <button
         onClick={() => onSkip(1)}

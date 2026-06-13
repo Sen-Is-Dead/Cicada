@@ -29,6 +29,21 @@ body {
   overscroll-behavior-y: contain;
 }
 
+/* Immersive reading: no visible scrollbar on the reader viewport */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Keep scroll targets clear of the overlaid top chrome / status bar */
+.reader-paragraph {
+  scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 64px);
+}
+
 /* ---------------- App theme tokens (RGB triplets for Tailwind) ---------------- */
 
 /* Dark mode (default) */

@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AudioLines, ChevronRight } from 'lucide-react';
 import { db, type Chapter } from '../../db/db';
 import { useReaderStore } from '../../store/readerStore';
 import { useTtsStore } from '../../store/ttsStore';
@@ -18,13 +18,16 @@ interface ReaderViewportProps {
   onPositionChange: (chapterIndex: number, paragraphIndex: number, chapterLength: number) => void;
   /** Explicit navigation request (e.g. "Next chapter" button in paged mode). */
   onRequestChapter: (chapterIndex: number) => void;
+  /** Double-tap on a paragraph: start TTS from there. */
+  onSpeakFrom: (chapterIndex: number, paragraphIndex: number) => void;
 }
 
 /**
  * Multi-chapter sliding-window renderer. Paragraphs mount in chunks; with
- * infinite scroll enabled, the next chapter is fetched from Dexie and appended
- * when the current one is fully rendered, so the book reads as one continuous
- * page. Parent must key this component so it remounts on explicit navigation.
+ * infinite scroll, the next chapter is appended when the current one is fully
+ * rendered, and chapters more than one behind the reading position are
+ * unloaded with manual scrollTop compensation (native scroll anchoring is
+ * disabled), so the page never jumps and memory stays bounded.
  */
 export const ReaderViewport = memo(function ReaderViewport({
   novelId,
@@ -34,6 +37,7 @@ export const ReaderViewport = memo(function ReaderViewport({
   infinite,
   onPositionChange,
   onRequestChapter,
+  onSpeakFrom,
 }: ReaderViewportProps) {
   const fontSize = useReaderStore((s) => s.fontSize);
   const lineHeight = useReaderStore((s) => s.lineHeight);
@@ -48,6 +52,8 @@ export const ReaderViewport = memo(function ReaderViewport({
 
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [renderCounts, setRenderCounts] = useState<Map<number, number>>(new Map());
+  /** Visual detachment: user scrolled away while audio plays. */
+  const [detached, setDetached] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -55,8 +61,10 @@ export const ReaderViewport = memo(function ReaderViewport({
   const visibleRef = useRef(new Set<number>());
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const refCallbacks = useRef(new Map<number, (el: HTMLParagraphElement | null) => void>());
+  const sectionRefs = useRef(new Map<number, HTMLElement>());
   const restoredRef = useRef(false);
   const loadingNextRef = useRef(false);
+  const pruneAdjustRef = useRef(0);
 
   // Mirror frequently-changing values into refs for stable observer callbacks
   const chaptersRef = useRef<Chapter[]>([]);
@@ -67,6 +75,8 @@ export const ReaderViewport = memo(function ReaderViewport({
   infiniteRef.current = infinite;
   const onChangeRef = useRef(onPositionChange);
   onChangeRef.current = onPositionChange;
+  const ttsActiveRef = useRef(ttsActive);
+  ttsActiveRef.current = ttsActive;
 
   // Initial chapter load (mount-only — parent remounts this component to navigate)
   useEffect(() => {
@@ -97,6 +107,33 @@ export const ReaderViewport = memo(function ReaderViewport({
       );
     });
   }, [novelId, totalChapters]);
+
+  /**
+   * Unload chapters that are 2+ behind the active reading position. The
+   * removed section's height is subtracted from scrollTop in a layout effect,
+   * so the visible text doesn't move a pixel.
+   */
+  const pruneIfNeeded = useCallback((activeChapter: number) => {
+    const list = chaptersRef.current;
+    const first = list[0];
+    if (!first || list.length < 3) return;
+    if (activeChapter - first.chapterIndex < 2) return;
+    const el = sectionRefs.current.get(first.chapterIndex);
+    pruneAdjustRef.current += el?.offsetHeight ?? 0;
+    setChapters((prev) => prev.slice(1));
+    setRenderCounts((prev) => {
+      const m = new Map(prev);
+      m.delete(first.chapterIndex);
+      return m;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (pruneAdjustRef.current !== 0 && containerRef.current) {
+      containerRef.current.scrollTop -= pruneAdjustRef.current;
+      pruneAdjustRef.current = 0;
+    }
+  }, [chapters]);
 
   /** Stable per-position ref callbacks so React doesn't churn the observer. */
   const getRefCallback = (posKey: number): ((el: HTMLParagraphElement | null) => void) => {
@@ -135,8 +172,12 @@ export const ReaderViewport = memo(function ReaderViewport({
           const min = Math.min(...visible);
           const chapterIndex = Math.floor(min / POS_FACTOR);
           const paragraphIndex = min % POS_FACTOR;
-          const ch = chaptersRef.current.find((c) => c.chapterIndex === chapterIndex);
-          onChangeRef.current(chapterIndex, paragraphIndex, ch?.paragraphs.length ?? 1);
+          // While listening, the audio owns the reading position
+          if (!ttsActiveRef.current) {
+            const ch = chaptersRef.current.find((c) => c.chapterIndex === chapterIndex);
+            onChangeRef.current(chapterIndex, paragraphIndex, ch?.paragraphs.length ?? 1);
+          }
+          pruneIfNeeded(chapterIndex);
         }
       },
       { root, rootMargin: '0px 0px -70% 0px' }, // only the top 30% band counts
@@ -147,7 +188,7 @@ export const ReaderViewport = memo(function ReaderViewport({
       obs.disconnect();
       observerRef.current = null;
     };
-  }, []);
+  }, [pruneIfNeeded]);
 
   // Restore the saved scroll position once the first chapter has rendered
   useEffect(() => {
@@ -162,30 +203,62 @@ export const ReaderViewport = memo(function ReaderViewport({
     }
   }, [chapters, startChapter, startParagraph]);
 
-  // Follow the spoken paragraph: auto-scroll, growing the window or appending
-  // the next chapter when the TTS engine moves past what's rendered
+  // Visual detachment: any manual scroll input while listening pauses auto-centering
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+    const detach = (): void => {
+      if (ttsActiveRef.current) setDetached(true);
+    };
+    root.addEventListener('wheel', detach, { passive: true });
+    root.addEventListener('touchmove', detach, { passive: true });
+    return () => {
+      root.removeEventListener('wheel', detach);
+      root.removeEventListener('touchmove', detach);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ttsActive) setDetached(false);
+  }, [ttsActive]);
+
+  // Follow the spoken paragraph: sync position/progress, auto-center (unless
+  // detached), growing the window or appending the next chapter as needed
   useEffect(() => {
     if (!ttsActive) return;
+    const spokenChapter = chaptersRef.current.find((c) => c.chapterIndex === ttsChapter);
+    onChangeRef.current(ttsChapter, ttsParagraph, spokenChapter?.paragraphs.length ?? 1);
+    pruneIfNeeded(ttsChapter);
+    if (detached) return; // user is looking ahead — don't rip them back
     const el = paragraphRefs.current.get(ttsPosKey);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    const target = chaptersRef.current.find((c) => c.chapterIndex === ttsChapter);
-    if (target) {
+    if (spokenChapter) {
       setRenderCounts((prev) => {
         const count = prev.get(ttsChapter) ?? 0;
         if (count > ttsParagraph) return prev;
         return new Map(prev).set(
           ttsChapter,
-          Math.min(target.paragraphs.length, ttsParagraph + RENDER_CHUNK),
+          Math.min(spokenChapter.paragraphs.length, ttsParagraph + RENDER_CHUNK),
         );
       });
     } else {
       const lastLoaded = chaptersRef.current[chaptersRef.current.length - 1];
       if (lastLoaded && ttsChapter === lastLoaded.chapterIndex + 1) appendNextChapter();
     }
-  }, [ttsActive, ttsChapter, ttsParagraph, ttsPosKey, chapters, renderCounts, appendNextChapter]);
+  }, [
+    ttsActive,
+    ttsChapter,
+    ttsParagraph,
+    ttsPosKey,
+    detached,
+    chapters,
+    renderCounts,
+    appendNextChapter,
+    pruneIfNeeded,
+  ]);
 
   // Grow the window / append the next chapter when the sentinel approaches
   useEffect(() => {
@@ -222,61 +295,96 @@ export const ReaderViewport = memo(function ReaderViewport({
   const morePossible = !!last && (!lastFullyRendered || (infinite && hasNext));
 
   return (
-    <div
-      ref={containerRef}
-      className={cn('h-full overflow-y-auto', `theme-${theme}`)}
-      style={{ backgroundColor: 'var(--reader-bg)', color: 'var(--reader-fg)' }}
-    >
+    <div className={cn('relative h-full', `theme-${theme}`)}>
       <div
-        className="mx-auto w-full max-w-2xl px-5 pb-24 pt-16"
-        style={{ fontSize: `${fontSize}px`, lineHeight }}
+        ref={containerRef}
+        className="no-scrollbar h-full overflow-y-auto"
+        style={{
+          backgroundColor: 'var(--reader-bg)',
+          color: 'var(--reader-fg)',
+          overflowAnchor: 'none', // pruning compensates scrollTop manually
+        }}
       >
-        {chapters.map((ch) => (
-          <section key={ch.id}>
-            <h2
-              className="mb-6 mt-12 font-semibold opacity-90 first:mt-0"
-              style={{ fontSize: '1.15em' }}
+        <div
+          className="mx-auto w-full max-w-2xl px-5 pb-24"
+          style={{
+            fontSize: `${fontSize}px`,
+            lineHeight,
+            paddingTop: 'calc(env(safe-area-inset-top, 0px) + 64px)',
+          }}
+        >
+          {chapters.map((ch) => (
+            <section
+              key={ch.id}
+              ref={(el) => {
+                if (el) sectionRefs.current.set(ch.chapterIndex, el);
+                else sectionRefs.current.delete(ch.chapterIndex);
+              }}
             >
-              {ch.title}
-            </h2>
-            {ch.paragraphs.slice(0, renderCounts.get(ch.chapterIndex) ?? 0).map((text, i) => {
-              const posKey = ch.chapterIndex * POS_FACTOR + i;
-              return (
-                <p
-                  key={i}
-                  data-pos={posKey}
-                  ref={getRefCallback(posKey)}
-                  className={cn(
-                    'mb-[0.9em] rounded-md transition-colors duration-300',
-                    ttsActive && posKey === ttsPosKey && '-mx-2 bg-accent/15 px-2',
-                  )}
-                >
-                  {text}
-                </p>
-              );
-            })}
-          </section>
-        ))}
+              <h2
+                className="mb-6 mt-12 font-semibold opacity-90 first:mt-0"
+                style={{ fontSize: '1.15em' }}
+              >
+                {ch.title}
+              </h2>
+              {ch.paragraphs.slice(0, renderCounts.get(ch.chapterIndex) ?? 0).map((text, i) => {
+                const posKey = ch.chapterIndex * POS_FACTOR + i;
+                return (
+                  <p
+                    key={i}
+                    data-pos={posKey}
+                    ref={getRefCallback(posKey)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setDetached(false);
+                      onSpeakFrom(ch.chapterIndex, i);
+                    }}
+                    className={cn(
+                      'reader-paragraph mb-[0.9em] rounded-md transition-colors duration-300',
+                      ttsActive && posKey === ttsPosKey && '-mx-2 bg-accent/15 px-2',
+                    )}
+                  >
+                    {text}
+                  </p>
+                );
+              })}
+            </section>
+          ))}
 
-        {morePossible && <div ref={sentinelRef} className="h-10" aria-hidden="true" />}
+          {morePossible && <div ref={sentinelRef} className="h-10" aria-hidden="true" />}
 
-        {lastFullyRendered && hasNext && !infinite && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation(); // don't toggle the chrome
-              onRequestChapter(last.chapterIndex + 1);
-            }}
-            className="mx-auto mt-4 flex items-center gap-1.5 rounded-lg border border-current px-5 py-2.5 text-sm opacity-60 transition-opacity hover:opacity-100"
-          >
-            Next chapter
-            <ChevronRight className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
+          {lastFullyRendered && hasNext && !infinite && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation(); // don't toggle the chrome
+                onRequestChapter(last.chapterIndex + 1);
+              }}
+              className="mx-auto mt-4 flex items-center gap-1.5 rounded-lg border border-current px-5 py-2.5 text-sm opacity-60 transition-opacity hover:opacity-100"
+            >
+              Next chapter
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
 
-        {lastFullyRendered && !hasNext && (
-          <p className="mt-8 text-center text-sm opacity-50">— The End —</p>
-        )}
+          {lastFullyRendered && !hasNext && (
+            <p className="mt-8 text-center text-sm opacity-50">— The End —</p>
+          )}
+        </div>
       </div>
+
+      {/* Visual detachment: snap back to the spoken paragraph */}
+      {ttsActive && detached && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setDetached(false);
+          }}
+          className="absolute bottom-28 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-xs font-medium text-on-accent shadow-lg transition-colors hover:bg-accent-hov"
+        >
+          <AudioLines className="h-4 w-4" aria-hidden="true" />
+          Return to audio
+        </button>
+      )}
     </div>
   );
 });

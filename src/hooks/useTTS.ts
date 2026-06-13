@@ -21,7 +21,16 @@ import { applyFixes, compileRules, type CompiledRule } from '../lib/textFixer';
 
 const PAUSE_AFTER_QUOTE_OR_BANG_MS = 600;
 const PAUSE_BETWEEN_PARAGRAPHS_MS = 200;
+const CHAPTER_TITLE_PAUSE_MS = 2000; // breath before announcing a new chapter
 const KEEPALIVE_INTERVAL_MS = 10_000;
+
+/**
+ * Perceptual scaling: most speech engines turn to mumble past ~1.6x, so the
+ * upper half of the slider is compressed on a power curve — UI 2.0x maps to
+ * ~1.6 engine rate, 1.5x to ~1.32. Below 1x stays linear (slow speech is fine).
+ */
+const toEngineRate = (ui: number): number => (ui <= 1 ? ui : Math.pow(ui, 0.68));
+const toEnginePitch = (ui: number): number => (ui <= 1 ? ui : Math.pow(ui, 0.7));
 
 export interface TtsEngine {
   start: (chapterIndex: number, paragraphIndex: number) => Promise<void>;
@@ -143,6 +152,39 @@ export function useTTS(
       }
     };
 
+    const makeUtterance = (text: string): SpeechSynthesisUtterance => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const { rate, pitch, voiceURI } = useTtsStore.getState();
+      utterance.rate = toEngineRate(rate);
+      utterance.pitch = toEnginePitch(pitch);
+      if (voiceURI) {
+        const voice = synth()?.getVoices().find((v) => v.voiceURI === voiceURI);
+        if (voice) utterance.voice = voice;
+      }
+      return utterance;
+    };
+
+    /** Announce the current chapter's title, then continue into paragraph 0. */
+    const speakChapterTitle = (): void => {
+      const s = synth();
+      const ch = chapterRef.current;
+      if (!s || !ch || status !== 'playing') return;
+      const gen = ++generation;
+      const utterance = makeUtterance(applyFixes(ch.title, rules));
+      utterance.onend = () => {
+        if (gen !== generation || status !== 'playing') return;
+        timer = window.setTimeout(speakCurrent, PAUSE_AFTER_QUOTE_OR_BANG_MS);
+      };
+      utterance.onerror = () => {
+        if (gen === generation && status === 'playing') {
+          timer = window.setTimeout(speakCurrent, 300);
+        }
+      };
+      s.speak(utterance);
+      useTtsStore.getState().setTtsPosition(ch.chapterIndex, 0);
+      useReaderStore.getState().setPosition(ch.chapterIndex, 0);
+    };
+
     const speakCurrent = (): void => {
       const s = synth();
       const ch = chapterRef.current;
@@ -152,14 +194,7 @@ export function useTTS(
       const text = applyFixes(raw, rules); // Translation Fixer pipeline
       const gen = ++generation;
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      const { rate, pitch, voiceURI } = useTtsStore.getState();
-      utterance.rate = rate;
-      utterance.pitch = pitch;
-      if (voiceURI) {
-        const voice = s.getVoices().find((v) => v.voiceURI === voiceURI);
-        if (voice) utterance.voice = voice;
-      }
+      const utterance = makeUtterance(text);
 
       utterance.onend = () => {
         if (gen !== generation || status !== 'playing') return;
@@ -213,7 +248,8 @@ export function useTTS(
       chapterRef.current = next;
       paragraphIndex = 0;
       updateMetadata(next.title);
-      speakCurrent();
+      // 2s breath, then announce the chapter title, then read on (user request)
+      timer = window.setTimeout(speakChapterTitle, CHAPTER_TITLE_PAUSE_MS);
     };
 
     const start = async (chapterIndex: number, startParagraph: number): Promise<void> => {
@@ -235,7 +271,9 @@ export function useTTS(
       silentCtl('play'); // must happen inside the user gesture chain
       setupMediaSession(ch.title);
       setStatus('playing');
-      speakCurrent();
+      // Starting at the top of a chapter? Announce its title first.
+      if (paragraphIndex === 0) speakChapterTitle();
+      else speakCurrent();
     };
 
     const pause = (fromAudio = false): void => {

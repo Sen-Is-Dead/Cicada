@@ -86,7 +86,10 @@ export function BookDetailPage() {
 
   return (
     <main className="mx-auto flex h-full w-full max-w-3xl flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-edge px-2 py-2">
+      <header
+        className="flex shrink-0 items-center justify-between border-b border-edge px-2 pb-2"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)' }}
+      >
         <Link
           to="/"
           aria-label="Back to library"

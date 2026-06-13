@@ -50,6 +50,13 @@ export function ReaderPage() {
     void tts.start(c, p);
   }, [tts]);
 
+  const handleSpeakFrom = useCallback(
+    (chapterIndex: number, paragraphIndex: number) => {
+      void tts.start(chapterIndex, paragraphIndex);
+    },
+    [tts],
+  );
+
   /* ----------------------- auto-hiding chrome ----------------------- */
   const [chromeVisible, setChromeVisible] = useState(true);
   const hideTimer = useRef<number | null>(null);
@@ -165,6 +172,7 @@ export function ReaderPage() {
             infinite={infinite}
             onPositionChange={handlePosition}
             onRequestChapter={goToChapter}
+            onSpeakFrom={handleSpeakFrom}
           />
         </div>
       ) : (

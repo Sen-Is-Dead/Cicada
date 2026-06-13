@@ -14,7 +14,10 @@ function LibraryPage() {
 
   return (
     <main className="mx-auto flex h-full w-full max-w-5xl flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b border-edge px-4 py-3">
+      <header
+        className="flex shrink-0 items-center justify-between border-b border-edge px-4 pb-3"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}
+      >
         <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
           <BookOpen className="h-5 w-5 text-accent" aria-hidden="true" />
           Cicada
