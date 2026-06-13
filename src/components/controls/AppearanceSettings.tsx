@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { X, Moon, Sun, Check, Download, Upload, Loader2 } from 'lucide-react';
 import { useReaderStore, type AccentId, type UiMode } from '../../store/readerStore';
 import { exportBackup, importBackup } from '../../lib/backup';
@@ -19,6 +19,12 @@ const ACCENTS: { id: AccentId; label: string; hex: string }[] = [
   { id: 'amber', label: 'Gold', hex: '#f59e0b' },
 ];
 
+function fmtBytes(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(0)} MB`;
+  return `${(n / 1e3).toFixed(0)} KB`;
+}
+
 const MODES: { id: UiMode; label: string; icon: typeof Moon }[] = [
   { id: 'dark', label: 'Dark', icon: Moon },
   { id: 'light', label: 'Light', icon: Sun },
@@ -34,6 +40,17 @@ export function AppearanceSettings({ onClose }: AppearanceSettingsProps) {
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
+
+  // Storage meter
+  const [storageEst, setStorageEst] = useState<{ usage: number; quota: number } | null>(null);
+  useEffect(() => {
+    if (!navigator.storage?.estimate) return;
+    void navigator.storage.estimate().then((est) => {
+      if (est.usage != null && est.quota != null && est.quota > 0) {
+        setStorageEst({ usage: est.usage, quota: est.quota });
+      }
+    });
+  }, []);
 
   const handleExport = async (): Promise<void> => {
     if (busy) return;
@@ -177,6 +194,33 @@ export function AppearanceSettings({ onClose }: AppearanceSettingsProps) {
         <p className="mt-2 text-xs text-faint">
           Exports your whole library — books, progress, notes, and fixer rules — as a JSON file.
         </p>
+
+        {/* Storage meter */}
+        {storageEst && (
+          <>
+            <p className="mb-1.5 border-t border-edge pt-4 text-xs text-muted">Storage</p>
+            <div
+              className="h-1.5 overflow-hidden rounded-full bg-surface2"
+              role="progressbar"
+              aria-valuenow={Math.round((storageEst.usage / storageEst.quota) * 100)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Storage used"
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full transition-[width]',
+                  storageEst.usage / storageEst.quota > 0.9 ? 'bg-red-400' : 'bg-accent',
+                )}
+                style={{ width: `${Math.min(100, (storageEst.usage / storageEst.quota) * 100).toFixed(1)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-xs text-faint">
+              {fmtBytes(storageEst.usage)} used of {fmtBytes(storageEst.quota)}
+              {' '}({Math.round((storageEst.usage / storageEst.quota) * 100)}%)
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

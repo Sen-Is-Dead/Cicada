@@ -30,6 +30,8 @@ export interface IngestStatus {
   /** Set on phase 'done': chapters added this run / total chapters in the book. */
   addedChapters: number;
   bookTotalChapters: number;
+  /** Number of spine sections that failed to parse and were skipped (EPUB only). */
+  skippedSections: number;
   error?: string;
 }
 
@@ -51,6 +53,7 @@ const IDLE: IngestStatus = {
   totalChapters: 0,
   addedChapters: 0,
   bookTotalChapters: 0,
+  skippedSections: 0,
 };
 
 const CHAPTER_BATCH_SIZE = 16;
@@ -84,8 +87,10 @@ function extractParagraphs(root: ParentNode): string[] {
     if (text) out.push(text);
   });
   if (out.length === 0) {
-    // Fallback for EPUBs that don't wrap body text in <p> tags
+    // Fallback for EPUBs that don't wrap body text in <p> tags.
+    // Strip noise nodes first so their text doesn't bleed into paragraphs.
     const body = root.querySelector('body') ?? (root as unknown as Element);
+    body.querySelectorAll('style, script, noscript, template').forEach((el) => el.remove());
     for (const line of (body.textContent ?? '').split(/\n+/)) {
       const t = line.replace(/\s+/g, ' ').trim();
       if (t) out.push(t);
@@ -131,7 +136,7 @@ async function ingestEpubFile(
   novelId: string,
   startIndex: number,
   onProgress: ProgressFn,
-): Promise<{ count: number; meta: ParsedMeta; titles: string[] }> {
+): Promise<{ count: number; skipped: number; meta: ParsedMeta; titles: string[] }> {
   const buffer = await file.arrayBuffer();
   const book = ePub(buffer);
   await book.ready;
@@ -187,6 +192,7 @@ async function ingestEpubFile(
   const titles: string[] = [];
   let chapterIndex = startIndex;
   let batch: Chapter[] = [];
+  let skipped = 0;
 
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i];
@@ -206,6 +212,9 @@ async function ingestEpubFile(
         titles.push(title);
         chapterIndex++;
       }
+    } catch {
+      // A single broken section shouldn't abort the whole import — skip it
+      skipped++;
     } finally {
       section.unload(); // free section DOM immediately — critical for massive books
     }
@@ -220,7 +229,7 @@ async function ingestEpubFile(
   if (batch.length > 0) await db.chapters.bulkPut(batch);
 
   book.destroy();
-  return { count: chapterIndex - startIndex, meta, titles };
+  return { count: chapterIndex - startIndex, skipped, meta, titles };
 }
 
 /* ------------------------------------ TXT ------------------------------------ */
@@ -335,6 +344,7 @@ export function useEpub() {
       const baseIndex = existing?.totalChapters ?? 0;
 
       let added = 0;
+      let totalSkipped = 0;
       let meta: ParsedMeta = {};
       const allTitles: string[] = [];
       try {
@@ -349,6 +359,7 @@ export function useEpub() {
             totalChapters: 0,
             addedChapters: 0,
             bookTotalChapters: 0,
+            skippedSections: 0,
           };
           setStatus({ ...base, phase: 'opening' });
           const onProgress: ProgressFn = (processed, total) =>
@@ -359,6 +370,7 @@ export function useEpub() {
             : await ingestTxtFile(file, novelId, baseIndex + added, onProgress);
 
           added += result.count;
+          totalSkipped += (result as { skipped?: number }).skipped ?? 0;
           allTitles.push(...result.titles);
           meta = {
             title: meta.title ?? result.meta.title,
@@ -380,6 +392,7 @@ export function useEpub() {
           totalChapters: added,
           addedChapters: added,
           bookTotalChapters: bookTotal,
+          skippedSections: totalSkipped,
         });
 
         if (existing) {
@@ -405,6 +418,10 @@ export function useEpub() {
           });
         }
 
+        // Request persistent storage after every successful import so the OS
+        // doesn't evict the library under disk pressure (Safari 7-day rule, etc.)
+        void navigator.storage?.persist?.();
+
         setStatus({
           phase: 'done',
           label: finalTitle,
@@ -414,6 +431,7 @@ export function useEpub() {
           totalChapters: added,
           addedChapters: added,
           bookTotalChapters: bookTotal,
+          skippedSections: totalSkipped,
         });
       } catch (err) {
         // Roll back everything inserted in THIS run (existing chapters untouched)
@@ -423,7 +441,17 @@ export function useEpub() {
           .delete()
           .catch(() => undefined);
         if (!existing) await db.novels.delete(novelId).catch(() => undefined);
-        fail('', err instanceof Error ? err.message : 'Import failed');
+        const isQuota =
+          (err instanceof DOMException && err.name === 'QuotaExceededError') ||
+          (err instanceof Error && err.name === 'QuotaExceededError');
+        fail(
+          '',
+          isQuota
+            ? 'Storage full — free up space or delete a book to continue importing'
+            : err instanceof Error
+              ? err.message
+              : 'Import failed',
+        );
       }
     },
     [],

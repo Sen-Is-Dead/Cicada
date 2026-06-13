@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Loader2 } from 'lucide-react';
+import { Headphones, Loader2, Play, X } from 'lucide-react';
 import { db } from '../../db/db';
 import { useReaderStore } from '../../store/readerStore';
+import { useTtsStore } from '../../store/ttsStore';
 import { TopBar } from '../layout/TopBar';
 import { ReaderViewport } from './ReaderViewport';
 import { Pagination } from './Pagination';
@@ -12,6 +13,7 @@ import { TypographySliders } from '../controls/TypographySliders';
 import { TTSControls, TTSVoiceSettings } from '../controls/TTSControls';
 import { DictionaryModal } from '../controls/DictionaryModal';
 import { useTTS } from '../../hooks/useTTS';
+import { useReadingStats } from '../../hooks/useReadingStats';
 import { cn, uuid } from '../../lib/utils';
 
 const PROGRESS_SAVE_DEBOUNCE_MS = 800;
@@ -45,8 +47,15 @@ export function ReaderPage() {
   const [dictOpen, setDictOpen] = useState(false);
   const wpmRef = useRef(DEFAULT_WPM);
 
+  /** Live TTS status — used for sessionStorage crash-recovery tracking. */
+  const ttsStatus = useTtsStore((s) => s.status);
+  /** Shown after a crash/forced-kill: lets the user restart TTS with one tap. */
+  const [resumePill, setResumePill] = useState<{ chapterIndex: number } | null>(null);
+
   /* --------------------------- audio engine -------------------------- */
   const tts = useTTS(novelId, novel?.totalChapters ?? 0, novel?.title ?? '', novel?.coverImage);
+
+  const { chapterEtaMs } = useReadingStats(novelId, currentChapterIndex, currentParagraphIndex, wpmRef);
 
   const handleListen = useCallback(() => {
     const { currentChapterIndex: c, currentParagraphIndex: p } = useReaderStore.getState();
@@ -120,6 +129,80 @@ export function ReaderPage() {
     return cancelHide;
   }, [scheduleHide, cancelHide]);
 
+  /* ------------------- crash recoverability ----------------------- */
+
+  // 1. On mount: check if TTS was playing when the tab last died (crash/kill).
+  //    If so, show the resume pill and consume the flag so it is one-shot.
+  useEffect(() => {
+    if (!novelId) return;
+    try {
+      const raw = sessionStorage.getItem('cicada_was_listening');
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { novelId: string; chapterIndex: number };
+      if (saved.novelId === novelId) {
+        setResumePill({ chapterIndex: saved.chapterIndex });
+        sessionStorage.removeItem('cicada_was_listening');
+      }
+    } catch {
+      sessionStorage.removeItem('cicada_was_listening');
+    }
+  }, [novelId]);
+
+  // 2. Track TTS playback state in sessionStorage.
+  //    Written while playing/paused so a crash preserves the flag.
+  //    Cleared on idle (deliberate stop) so normal exits do not trigger the pill.
+  useEffect(() => {
+    if (!novelId) return;
+    if (ttsStatus === 'playing' || ttsStatus === 'paused') {
+      const { chapterIndex } = useTtsStore.getState();
+      sessionStorage.setItem(
+        'cicada_was_listening',
+        JSON.stringify({ novelId, chapterIndex }),
+      );
+    } else {
+      sessionStorage.removeItem('cicada_was_listening');
+    }
+  }, [ttsStatus, novelId]);
+
+  // 3. Clean navigation away from the reader (not a crash) clears the flag.
+  //    This fires on unmount; on a crash the cleanup never runs so the flag persists.
+  useEffect(() => {
+    return () => {
+      sessionStorage.removeItem('cicada_was_listening');
+    };
+  }, []);
+
+  // 4. Flush current position to IndexedDB immediately on pagehide / tab-hide
+  //    so a crash or tab-kill does not lose more than the current debounce window.
+  const ready = anchor !== null;
+  useEffect(() => {
+    if (!novelId || !ready) return;
+    const flush = (): void => {
+      const { currentChapterIndex, currentParagraphIndex } = useReaderStore.getState();
+      void db.progress.put({
+        novelId,
+        currentChapterIndex,
+        currentParagraphIndex,
+        readingSpeedWPM: wpmRef.current,
+        lastReadAt: Date.now(),
+      });
+    };
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [novelId, ready]);
+
+  // 5. Auto-dismiss resume pill once TTS is actually running.
+  useEffect(() => {
+    if (ttsStatus === 'playing') setResumePill(null);
+  }, [ttsStatus]);
+
   /* ------------------------ position loading ------------------------ */
   useEffect(() => {
     if (!novelId) return;
@@ -143,7 +226,6 @@ export function ReaderPage() {
   }, [novelId, chapterParam, openNovel]);
 
   /* ----------------- debounced progress persistence ----------------- */
-  const ready = anchor !== null;
   useEffect(() => {
     if (!novelId || !ready) return;
     const t = setTimeout(() => {
@@ -253,6 +335,34 @@ export function ReaderPage() {
           backTo={`/book/${novelId}`}
           onOpenSettings={() => setSettingsOpen((o) => !o)}
         />
+        {/* Resume-listening pill — appears after a crash/forced-kill */}
+        {resumePill && ttsStatus === 'idle' && (
+          <div className="flex justify-center px-4 pb-2 pt-1">
+            <div className="flex items-center gap-2 rounded-full border border-edge bg-surface px-3 py-1.5 shadow-md">
+              <Headphones className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+              <span className="whitespace-nowrap text-xs text-main">
+                Resume listening &mdash; Ch.&nbsp;{resumePill.chapterIndex + 1}
+              </span>
+              <button
+                onClick={() => {
+                  void handleListen();
+                  setResumePill(null);
+                }}
+                aria-label="Resume listening"
+                className="rounded-full bg-accent p-1 text-on-accent hover:bg-accent-hov"
+              >
+                <Play className="h-3 w-3 translate-x-[0.5px]" aria-hidden="true" />
+              </button>
+              <button
+                onClick={() => setResumePill(null)}
+                aria-label="Dismiss"
+                className="p-0.5 text-faint hover:text-muted"
+              >
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Settings panel */}
@@ -272,7 +382,7 @@ export function ReaderPage() {
             }}
             className="rounded-lg border border-edge px-3 py-2 text-xs text-muted transition-colors hover:bg-surface2 hover:text-main"
           >
-            Translation fixer…
+            Translation fixer...
           </button>
           <label className="flex items-center justify-between gap-2 text-xs text-muted">
             <span>
@@ -311,6 +421,7 @@ export function ReaderPage() {
           chapterIndex={viewedChapter}
           totalChapters={novel?.totalChapters ?? 0}
           chapterFraction={viewed?.fraction ?? 0}
+          chapterEtaMs={chapterEtaMs}
           onNavigate={goToChapter}
         />
       </div>

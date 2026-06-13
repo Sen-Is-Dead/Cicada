@@ -161,6 +161,12 @@ export function ImportModal({ onClose }: ImportModalProps) {
               {status.bookTotalChapters !== status.addedChapters &&
                 ` — ${status.bookTotalChapters} total`}
             </p>
+            {status.skippedSections > 0 && (
+              <p className="text-xs text-amber-400">
+                {status.skippedSections} section{status.skippedSections === 1 ? '' : 's'} could not
+                be parsed and {status.skippedSections === 1 ? 'was' : 'were'} skipped.
+              </p>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={reset}
@@ -181,7 +187,7 @@ export function ImportModal({ onClose }: ImportModalProps) {
         {status.phase === 'error' && (
           <div className="flex flex-col items-center gap-3 py-4 text-center">
             <AlertTriangle className="h-9 w-9 text-red-400" aria-hidden="true" />
-            <p className="text-sm text-red-300">{status.error}</p>
+                       <p className="text-sm text-red-300">{status.error}</p>
             <button
               onClick={reset}
               className="rounded-lg border border-edge px-4 py-1.5 text-sm hover:bg-surface2"

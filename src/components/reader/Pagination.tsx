@@ -1,10 +1,13 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { fmtEta } from '../../hooks/useReadingStats';
 
 interface PaginationProps {
   chapterIndex: number;
   totalChapters: number;
   /** 0–1 fraction read within the current chapter (smooths the bar). */
   chapterFraction: number;
+  /** Remaining time in the current chapter (ms). Null/undefined = not yet measured. */
+  chapterEtaMs?: number | null;
   onNavigate: (index: number) => void;
 }
 
@@ -16,6 +19,7 @@ export function Pagination({
   chapterIndex,
   totalChapters,
   chapterFraction,
+  chapterEtaMs,
   onNavigate,
 }: PaginationProps) {
   const max = Math.max(0, totalChapters - 1);
@@ -54,6 +58,9 @@ export function Pagination({
           <p className="text-center text-xs text-faint">
             Chapter {Math.min(chapterIndex, max) + 1} / {Math.max(totalChapters, 1)} ·{' '}
             {Math.round(overall * 100)}%
+            {chapterEtaMs != null && chapterEtaMs > 0 && (
+              <span className="ml-1.5">· {fmtEta(chapterEtaMs)} left</span>
+            )}
           </p>
         </div>
 

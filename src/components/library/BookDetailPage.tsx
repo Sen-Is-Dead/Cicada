@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2, StickyNote, Trash2 } from 'lucide-react';
+import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2, StickyNote, Trash2, Download } from 'lucide-react';
 import { db } from '../../db/db';
 import { EditBookModal } from './EditBookModal';
+import { exportNovelBackup } from '../../lib/backup';
+import { fmtEta, countWords } from '../../hooks/useReadingStats';
 import { cn } from '../../lib/utils';
 
 const LIST_CHUNK = 150;
+const SAMPLE_CHAPTERS = 8; // number of chapters to sample for avg word count
 
 /**
  * Midpoint between library and reader: metadata, rating, description, and the
@@ -34,6 +37,8 @@ export function BookDetailPage() {
   const [listCount, setListCount] = useState(LIST_CHUNK);
   const [editing, setEditing] = useState(false);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [bookEtaMs, setBookEtaMs] = useState<number | null>(null);
   const backfillingRef = useRef(false);
 
   useEffect(() => {
@@ -71,6 +76,38 @@ export function BookDetailPage() {
     };
   }, [novel]);
 
+  // Estimate book ETA: sample a few chapters to get avg words, then extrapolate
+  useEffect(() => {
+    if (!novel || !progress) return;
+    const wpm = progress.readingSpeedWPM;
+    if (!wpm || wpm <= 0) return;
+    const remaining = novel.totalChapters - progress.currentChapterIndex - 1;
+    if (remaining <= 0) return;
+    let cancelled = false;
+    void (async () => {
+      // Sample up to SAMPLE_CHAPTERS chapters spread across the whole book
+      const step = Math.max(1, Math.floor(novel.totalChapters / SAMPLE_CHAPTERS));
+      const indices: number[] = [];
+      for (let i = 0; i < novel.totalChapters && indices.length < SAMPLE_CHAPTERS; i += step) {
+        indices.push(i);
+      }
+      const sample = await Promise.all(
+        indices.map((idx) => db.chapters.get(`${novel.id}_${idx}`)),
+      );
+      if (cancelled) return;
+      const wordCounts = sample
+        .filter(Boolean)
+        .map((ch) => ch!.paragraphs.reduce((s, p) => s + countWords(p), 0));
+      if (wordCounts.length === 0) return;
+      const avgWords = wordCounts.reduce((s, w) => s + w, 0) / wordCounts.length;
+      const estimatedWords = remaining * avgWords;
+      setBookEtaMs((estimatedWords / wpm) * 60_000);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [novel, progress]);
+
   const handleListScroll = (e: UIEvent<HTMLDivElement>): void => {
     const el = e.currentTarget;
     if (el.scrollTop + el.clientHeight > el.scrollHeight - 600) {
@@ -81,6 +118,23 @@ export function BookDetailPage() {
   const setRating = (value: number): void => {
     if (!novel) return;
     void db.novels.update(novel.id, { rating: novel.rating === value ? undefined : value });
+  };
+
+  const handleExport = async (): Promise<void> => {
+    if (!novelId || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await exportNovelBackup(novelId);
+      const safeTitle = (novel?.title ?? 'book').replace(/[^a-z0-9]/gi, '_').slice(0, 50);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cicada_${safeTitle}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
   };
 
   if (!novelId) return null;
@@ -110,13 +164,27 @@ export function BookDetailPage() {
           <ChevronLeft className="h-5 w-5" />
           Library
         </Link>
-        <button
-          onClick={() => setEditing(true)}
-          aria-label="Edit book"
-          className="rounded-md p-1.5 text-muted hover:bg-surface2 hover:text-main"
-        >
-          <Pencil className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => void handleExport()}
+            disabled={exporting}
+            aria-label="Export this book"
+            title="Export this book"
+            className="rounded-md p-1.5 text-muted hover:bg-surface2 hover:text-main disabled:opacity-40"
+          >
+            {exporting
+              ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+              : <Download className="h-5 w-5" aria-hidden="true" />
+            }
+          </button>
+          <button
+            onClick={() => setEditing(true)}
+            aria-label="Edit book"
+            className="rounded-md p-1.5 text-muted hover:bg-surface2 hover:text-main"
+          >
+            <Pencil className="h-5 w-5" />
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto" onScroll={handleListScroll}>
@@ -177,6 +245,11 @@ export function BookDetailPage() {
             <Play className="h-4 w-4" aria-hidden="true" />
             {hasProgress ? `Continue — Chapter ${currentChapter + 1}` : 'Start reading'}
           </Link>
+          {hasProgress && bookEtaMs != null && bookEtaMs > 0 && (
+            <p className="mt-1.5 text-center text-xs text-faint">
+              {fmtEta(bookEtaMs)} remaining in book
+            </p>
+          )}
         </div>
 
         {/* Notes (saved via long-press in the reader) */}
@@ -194,7 +267,7 @@ export function BookDetailPage() {
                     className="min-w-0 flex-1"
                   >
                     <p className="line-clamp-2 text-sm italic leading-snug text-muted">
-                      “{note.selectedText || note.text}”
+                      "{note.selectedText || note.text}"
                     </p>
                     {note.text && note.selectedText && (
                       <p className="mt-0.5 text-sm leading-snug text-main">{note.text}</p>
