@@ -10,8 +10,9 @@ import { Pagination } from './Pagination';
 import { ThemeToggle } from '../controls/ThemeToggle';
 import { TypographySliders } from '../controls/TypographySliders';
 import { TTSControls, TTSVoiceSettings } from '../controls/TTSControls';
+import { DictionaryModal } from '../controls/DictionaryModal';
 import { useTTS } from '../../hooks/useTTS';
-import { cn } from '../../lib/utils';
+import { cn, uuid } from '../../lib/utils';
 
 const PROGRESS_SAVE_DEBOUNCE_MS = 800;
 const CHROME_HIDE_DELAY_MS = 3500;
@@ -38,8 +39,10 @@ export function ReaderPage() {
   const novel = useLiveQuery(() => (novelId ? db.novels.get(novelId) : undefined), [novelId]);
 
   const [anchor, setAnchor] = useState<Anchor | null>(null);
-  const [chapterFraction, setChapterFraction] = useState(0);
+  /** What the user is visibly looking at — drives the status bar, NOT progress. */
+  const [viewed, setViewed] = useState<{ chapter: number; fraction: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dictOpen, setDictOpen] = useState(false);
   const wpmRef = useRef(DEFAULT_WPM);
 
   /* --------------------------- audio engine -------------------------- */
@@ -52,9 +55,32 @@ export function ReaderPage() {
 
   const handleSpeakFrom = useCallback(
     (chapterIndex: number, paragraphIndex: number) => {
-      void tts.start(chapterIndex, paragraphIndex);
+      void tts.seekTo(chapterIndex, paragraphIndex);
     },
     [tts],
+  );
+
+  /** Selection-based note saving (spec Phase 5, native-selection refactor). */
+  const handleSaveSelection = useCallback(
+    (
+      chapterIndex: number,
+      startParagraphIndex: number,
+      endParagraphIndex: number,
+      selectedText: string,
+    ) => {
+      if (!novelId) return;
+      void db.notes.put({
+        id: uuid(),
+        novelId,
+        chapterIndex,
+        startParagraphIndex,
+        endParagraphIndex,
+        selectedText,
+        text: '', // direct save — no annotation step
+        timestamp: Date.now(),
+      });
+    },
+    [novelId],
   );
 
   /* ----------------------- auto-hiding chrome ----------------------- */
@@ -109,6 +135,7 @@ export function ReaderPage() {
       const paragraph = fromParam ? 0 : p?.currentParagraphIndex ?? 0;
       openNovel(novelId, chapter, paragraph);
       setAnchor({ chapter, paragraph, key: Date.now() });
+      setViewed({ chapter, fraction: 0 });
     });
     return () => {
       cancelled = true;
@@ -132,12 +159,23 @@ export function ReaderPage() {
   }, [novelId, ready, currentChapterIndex, currentParagraphIndex]);
 
   /* --------------------------- navigation --------------------------- */
+  /** Progress channel (audio-gated by the viewport while TTS is active). */
   const handlePosition = useCallback(
-    (chapterIndex: number, paragraphIndex: number, chapterLength: number) => {
+    (chapterIndex: number, paragraphIndex: number) => {
       setPosition(chapterIndex, paragraphIndex);
-      setChapterFraction(chapterLength > 1 ? paragraphIndex / (chapterLength - 1) : 1);
     },
     [setPosition],
+  );
+
+  /** Viewed channel — whatever is visibly on screen right now. */
+  const handleViewed = useCallback(
+    (chapterIndex: number, paragraphIndex: number, chapterLength: number) => {
+      setViewed({
+        chapter: chapterIndex,
+        fraction: chapterLength > 1 ? paragraphIndex / (chapterLength - 1) : 1,
+      });
+    },
+    [],
   );
 
   const goToChapter = useCallback(
@@ -146,8 +184,8 @@ export function ReaderPage() {
       tts.stop(); // manual navigation ends the listening session
       const clamped = Math.max(0, Math.min(novel.totalChapters - 1, index));
       setPosition(clamped, 0);
-      setChapterFraction(0);
       setAnchor({ chapter: clamped, paragraph: 0, key: Date.now() });
+      setViewed({ chapter: clamped, fraction: 0 });
       showChrome();
     },
     [novel, setPosition, showChrome, tts],
@@ -156,8 +194,9 @@ export function ReaderPage() {
   if (!novelId) return null;
 
   const barsVisible = chromeVisible || settingsOpen;
-  const chapterTitle =
-    novel?.chapterTitles?.[currentChapterIndex] ?? `Chapter ${currentChapterIndex + 1}`;
+  // Status bar follows the chapter the user is LOOKING at, not the TTS chapter
+  const viewedChapter = viewed?.chapter ?? currentChapterIndex;
+  const chapterTitle = novel?.chapterTitles?.[viewedChapter] ?? `Chapter ${viewedChapter + 1}`;
 
   return (
     <main className="relative h-full overflow-hidden">
@@ -171,8 +210,10 @@ export function ReaderPage() {
             startParagraph={anchor.paragraph}
             infinite={infinite}
             onPositionChange={handlePosition}
+            onViewedChange={handleViewed}
             onRequestChapter={goToChapter}
             onSpeakFrom={handleSpeakFrom}
+            onSaveSelection={handleSaveSelection}
           />
         </div>
       ) : (
@@ -224,6 +265,15 @@ export function ReaderPage() {
           <ThemeToggle />
           <TypographySliders />
           <TTSVoiceSettings onChanged={tts.refreshSettings} />
+          <button
+            onClick={() => {
+              setSettingsOpen(false);
+              setDictOpen(true);
+            }}
+            className="rounded-lg border border-edge px-3 py-2 text-xs text-muted transition-colors hover:bg-surface2 hover:text-main"
+          >
+            Translation fixer…
+          </button>
           <label className="flex items-center justify-between gap-2 text-xs text-muted">
             <span>
               Infinite scrolling
@@ -258,12 +308,23 @@ export function ReaderPage() {
           onSkip={tts.skip}
         />
         <Pagination
-          chapterIndex={currentChapterIndex}
+          chapterIndex={viewedChapter}
           totalChapters={novel?.totalChapters ?? 0}
-          chapterFraction={chapterFraction}
+          chapterFraction={viewed?.fraction ?? 0}
           onNavigate={goToChapter}
         />
       </div>
+
+      {/* Translation Fixer rules (spec Phase 5) */}
+      {dictOpen && (
+        <DictionaryModal
+          novelId={novelId}
+          onClose={() => {
+            setDictOpen(false);
+            void tts.reloadRules(); // apply edits to the live session
+          }}
+        />
+      )}
     </main>
   );
 }

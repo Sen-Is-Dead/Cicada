@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { db, type Chapter } from '../db/db';
-import { useTtsStore, type TtsStatus } from '../store/ttsStore';
+import {
+  TTS_MAX_PITCH,
+  TTS_MAX_RATE,
+  TTS_MIN_PITCH,
+  TTS_MIN_RATE,
+  useTtsStore,
+  type TtsStatus,
+} from '../store/ttsStore';
 import { useReaderStore } from '../store/readerStore';
 import { applyFixes, compileRules, type CompiledRule } from '../lib/textFixer';
 
@@ -24,13 +31,9 @@ const PAUSE_BETWEEN_PARAGRAPHS_MS = 200;
 const CHAPTER_TITLE_PAUSE_MS = 2000; // breath before announcing a new chapter
 const KEEPALIVE_INTERVAL_MS = 10_000;
 
-/**
- * Perceptual scaling: most speech engines turn to mumble past ~1.6x, so the
- * upper half of the slider is compressed on a power curve — UI 2.0x maps to
- * ~1.6 engine rate, 1.5x to ~1.32. Below 1x stays linear (slow speech is fine).
- */
-const toEngineRate = (ui: number): number => (ui <= 1 ? ui : Math.pow(ui, 0.68));
-const toEnginePitch = (ui: number): number => (ui <= 1 ? ui : Math.pow(ui, 0.7));
+// Hard engine ceilings (also clamps stale persisted values from older builds)
+const clampRate = (v: number): number => Math.min(TTS_MAX_RATE, Math.max(TTS_MIN_RATE, v));
+const clampPitch = (v: number): number => Math.min(TTS_MAX_PITCH, Math.max(TTS_MIN_PITCH, v));
 
 export interface TtsEngine {
   start: (chapterIndex: number, paragraphIndex: number) => Promise<void>;
@@ -39,8 +42,17 @@ export interface TtsEngine {
   stop: () => void;
   /** Skip ±1 paragraph (also bound to lock-screen next/previous track). */
   skip: (delta: number) => void;
+  /**
+   * Jump the active session to an exact paragraph (double-tap-to-seek).
+   * Updates the stores immediately, cancels the current utterance in place,
+   * and speaks from the target without restarting the session. Starts a new
+   * session if idle.
+   */
+  seekTo: (chapterIndex: number, paragraphIndex: number) => Promise<void>;
   /** Re-speak the current paragraph after a rate/pitch/voice change. */
   refreshSettings: () => void;
+  /** Re-fetch dictionary rules (after edits in the Translation Fixer UI). */
+  reloadRules: () => Promise<void>;
 }
 
 export function useTTS(
@@ -155,8 +167,8 @@ export function useTTS(
     const makeUtterance = (text: string): SpeechSynthesisUtterance => {
       const utterance = new SpeechSynthesisUtterance(text);
       const { rate, pitch, voiceURI } = useTtsStore.getState();
-      utterance.rate = toEngineRate(rate);
-      utterance.pitch = toEnginePitch(pitch);
+      utterance.rate = clampRate(rate);
+      utterance.pitch = clampPitch(pitch);
       if (voiceURI) {
         const voice = synth()?.getVoices().find((v) => v.voiceURI === voiceURI);
         if (voice) utterance.voice = voice;
@@ -335,6 +347,42 @@ export function useTTS(
       speakCurrent();
     };
 
+    const seekTo = async (targetChapter: number, targetParagraph: number): Promise<void> => {
+      if (status === 'idle') {
+        await start(targetChapter, targetParagraph);
+        return;
+      }
+      // Immediate store update so highlight/progress react before audio does
+      useTtsStore.getState().setTtsPosition(targetChapter, targetParagraph);
+      useReaderStore.getState().setPosition(targetChapter, targetParagraph);
+      generation++;
+      clearTimer();
+      synth()?.cancel(); // stop the current sentence mid-word
+      let ch = chapterRef.current;
+      if (!ch || ch.chapterIndex !== targetChapter) {
+        const id = novelIdRef.current;
+        if (!id) return;
+        const next = await db.chapters.get(`${id}_${targetChapter}`);
+        if (!next) return;
+        chapterRef.current = next;
+        ch = next;
+        updateMetadata(next.title);
+      }
+      paragraphIndex = Math.min(Math.max(targetParagraph, 0), ch.paragraphs.length - 1);
+      if (status === 'paused') {
+        setStatus('playing');
+        silentCtl('play');
+      }
+      speakCurrent();
+    };
+
+    const reloadRules = async (): Promise<void> => {
+      const id = novelIdRef.current;
+      if (!id) return;
+      const dictRules = await db.dictionary.where('novelId').anyOf(id, 'global').toArray();
+      rules = compileRules(dictRules); // applies from the next utterance onward
+    };
+
     const refreshSettings = (): void => {
       const s = synth();
       if (!s || status !== 'playing') return;
@@ -344,7 +392,7 @@ export function useTTS(
       speakCurrent();
     };
 
-    return { start, pause, resume, stop, skip, refreshSettings };
+    return { start, pause, resume, stop, skip, seekTo, refreshSettings, reloadRules };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

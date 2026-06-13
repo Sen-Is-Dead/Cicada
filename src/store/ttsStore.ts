@@ -10,6 +10,19 @@ import { persist } from 'zustand/middleware';
 
 export type TtsStatus = 'idle' | 'playing' | 'paused';
 
+/**
+ * Absolute engine ceilings. Speech turns to mumble past ~1.6x rate, and pitch
+ * above ~1.4 sounds robotic — the sliders use these same bounds, so the UI
+ * value IS the engine value (no hidden remapping).
+ */
+export const TTS_MIN_RATE = 0.5;
+export const TTS_MAX_RATE = 1.6;
+export const TTS_MIN_PITCH = 0.5;
+export const TTS_MAX_PITCH = 1.4;
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
 interface TtsState {
   status: TtsStatus;
   rate: number; // 0.5–2
@@ -35,8 +48,8 @@ export const useTtsStore = create<TtsState>()(
       chapterIndex: 0,
       paragraphIndex: 0,
       setStatus: (status) => set({ status }),
-      setRate: (rate) => set({ rate }),
-      setPitch: (pitch) => set({ pitch }),
+      setRate: (rate) => set({ rate: clamp(rate, TTS_MIN_RATE, TTS_MAX_RATE) }),
+      setPitch: (pitch) => set({ pitch: clamp(pitch, TTS_MIN_PITCH, TTS_MAX_PITCH) }),
       setVoiceURI: (voiceURI) => set({ voiceURI }),
       setTtsPosition: (chapterIndex, paragraphIndex) => set({ chapterIndex, paragraphIndex }),
     }),

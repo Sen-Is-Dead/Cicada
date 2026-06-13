@@ -1,5 +1,7 @@
-import { X, Moon, Sun, Check } from 'lucide-react';
+import { useRef, useState, type ChangeEvent } from 'react';
+import { X, Moon, Sun, Check, Download, Upload, Loader2 } from 'lucide-react';
 import { useReaderStore, type AccentId, type UiMode } from '../../store/readerStore';
+import { exportBackup, importBackup } from '../../lib/backup';
 import { cn } from '../../lib/utils';
 
 interface AppearanceSettingsProps {
@@ -27,6 +29,47 @@ export function AppearanceSettings({ onClose }: AppearanceSettingsProps) {
   const accent = useReaderStore((s) => s.accent);
   const setUiMode = useReaderStore((s) => s.setUiMode);
   const setAccent = useReaderStore((s) => s.setAccent);
+
+  // Phase 5: manual JSON backup of the entire IndexedDB library
+  const [busy, setBusy] = useState<'export' | 'import' | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+
+  const handleExport = async (): Promise<void> => {
+    if (busy) return;
+    setBusy('export');
+    setMessage(null);
+    try {
+      const blob = await exportBackup();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cicada-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage('Backup downloaded.');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleImport = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || busy) return;
+    setBusy('import');
+    setMessage(null);
+    try {
+      const result = await importBackup(file);
+      setMessage(`Restored ${result.novels} book${result.novels === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div
@@ -72,7 +115,7 @@ export function AppearanceSettings({ onClose }: AppearanceSettingsProps) {
         </div>
 
         <p className="mb-1.5 text-xs text-muted">Accent colour</p>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="mb-5 grid grid-cols-4 gap-2">
           {ACCENTS.map(({ id, label, hex }) => (
             <button
               key={id}
@@ -94,6 +137,46 @@ export function AppearanceSettings({ onClose }: AppearanceSettingsProps) {
             </button>
           ))}
         </div>
+
+        {/* Backup (spec Phase 5: manual JSON export/import) */}
+        <p className="mb-1.5 border-t border-edge pt-4 text-xs text-muted">Backup</p>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() => void handleExport()}
+            disabled={busy !== null}
+            className="flex items-center justify-center gap-2 rounded-lg border border-edge px-3 py-2 text-sm text-muted transition-colors hover:bg-surface2 hover:text-main disabled:opacity-40"
+          >
+            {busy === 'export' ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="h-4 w-4" aria-hidden="true" />
+            )}
+            Export
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            disabled={busy !== null}
+            className="flex items-center justify-center gap-2 rounded-lg border border-edge px-3 py-2 text-sm text-muted transition-colors hover:bg-surface2 hover:text-main disabled:opacity-40"
+          >
+            {busy === 'import' ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Upload className="h-4 w-4" aria-hidden="true" />
+            )}
+            Import
+          </button>
+          <input
+            ref={importRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => void handleImport(e)}
+          />
+        </div>
+        {message && <p className="mt-2 text-xs text-faint">{message}</p>}
+        <p className="mt-2 text-xs text-faint">
+          Exports your whole library — books, progress, notes, and fixer rules — as a JSON file.
+        </p>
       </div>
     </div>
   );

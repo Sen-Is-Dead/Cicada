@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AudioLines, ChevronRight } from 'lucide-react';
-import { db, type Chapter } from '../../db/db';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { AudioLines, ChevronRight, StickyNote } from 'lucide-react';
+import { db, type Chapter, type Note } from '../../db/db';
 import { useReaderStore } from '../../store/readerStore';
 import { useTtsStore } from '../../store/ttsStore';
 import { cn } from '../../lib/utils';
@@ -8,6 +9,19 @@ import { cn } from '../../lib/utils';
 const RENDER_CHUNK = 80;
 /** Composite position key: chapterIndex * FACTOR + paragraphIndex. */
 const POS_FACTOR = 1_000_000;
+/** Re-enable auto-centering after this much input silence while detached. */
+const REATTACH_DELAY_MS = 5000;
+/** Two taps on the same paragraph within this window = seek. */
+const DOUBLE_TAP_MS = 350;
+
+interface SelectionMenuState {
+  x: number; // viewport coordinates of the selection rect
+  y: number;
+  chapterIndex: number;
+  start: number; // startParagraphIndex
+  end: number; // endParagraphIndex (inclusive)
+  text: string; // selection.toString()
+}
 
 interface ReaderViewportProps {
   novelId: string;
@@ -15,19 +29,29 @@ interface ReaderViewportProps {
   startChapter: number;
   startParagraph: number;
   infinite: boolean;
+  /** Owns reading progress (gated to the audio position while TTS is active). */
   onPositionChange: (chapterIndex: number, paragraphIndex: number, chapterLength: number) => void;
+  /** Always fires with what's visibly on screen — drives the status bar. */
+  onViewedChange: (chapterIndex: number, paragraphIndex: number, chapterLength: number) => void;
   /** Explicit navigation request (e.g. "Next chapter" button in paged mode). */
   onRequestChapter: (chapterIndex: number) => void;
-  /** Double-tap on a paragraph: start TTS from there. */
+  /** Double-tap on a paragraph: seek TTS to it. */
   onSpeakFrom: (chapterIndex: number, paragraphIndex: number) => void;
+  /** Save-note action from the native-selection floating menu (spec Phase 5). */
+  onSaveSelection: (
+    chapterIndex: number,
+    startParagraphIndex: number,
+    endParagraphIndex: number,
+    selectedText: string,
+  ) => void;
 }
 
 /**
  * Multi-chapter sliding-window renderer. Paragraphs mount in chunks; with
  * infinite scroll, the next chapter is appended when the current one is fully
- * rendered, and chapters more than one behind the reading position are
- * unloaded with manual scrollTop compensation (native scroll anchoring is
- * disabled), so the page never jumps and memory stays bounded.
+ * rendered (behind a scroll-snap chapter break that adds deliberate friction),
+ * and chapters 2+ behind the reading position are unloaded with manual
+ * scrollTop compensation so the page never jumps.
  */
 export const ReaderViewport = memo(function ReaderViewport({
   novelId,
@@ -36,8 +60,10 @@ export const ReaderViewport = memo(function ReaderViewport({
   startParagraph,
   infinite,
   onPositionChange,
+  onViewedChange,
   onRequestChapter,
   onSpeakFrom,
+  onSaveSelection,
 }: ReaderViewportProps) {
   const fontSize = useReaderStore((s) => s.fontSize);
   const lineHeight = useReaderStore((s) => s.lineHeight);
@@ -54,6 +80,28 @@ export const ReaderViewport = memo(function ReaderViewport({
   const [renderCounts, setRenderCounts] = useState<Map<number, number>>(new Map());
   /** Visual detachment: user scrolled away while audio plays. */
   const [detached, setDetached] = useState(false);
+  /** Transient user-select suppression so double-taps don't highlight text. */
+  const [suppressSelect, setSuppressSelect] = useState(false);
+  /** Floating "Save note" menu over the active native selection. */
+  const [selMenu, setSelMenu] = useState<SelectionMenuState | null>(null);
+
+  // Paragraphs covered by saved notes -> underline marker in the renderer
+  const notes = useLiveQuery(
+    () => db.notes.where('novelId').equals(novelId).toArray(),
+    [novelId],
+    [] as Note[],
+  );
+  const notedKeys = useMemo(() => {
+    const set = new Set<number>();
+    for (const note of notes) {
+      // Legacy notes (pre-selection schema) stored a single paragraphIndex
+      const raw = note as Partial<Note> & { paragraphIndex?: number; chapterIndex: number };
+      const start = raw.startParagraphIndex ?? raw.paragraphIndex ?? 0;
+      const end = Math.min(raw.endParagraphIndex ?? start, start + 500);
+      for (let p = start; p <= end; p++) set.add(raw.chapterIndex * POS_FACTOR + p);
+    }
+    return set;
+  }, [notes]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -65,6 +113,10 @@ export const ReaderViewport = memo(function ReaderViewport({
   const restoredRef = useRef(false);
   const loadingNextRef = useRef(false);
   const pruneAdjustRef = useRef(0);
+  const reattachTimerRef = useRef<number | null>(null);
+  const suppressTimerRef = useRef<number | null>(null);
+  const lastTapRef = useRef<{ key: number; time: number }>({ key: -1, time: 0 });
+  const selChangeTimerRef = useRef<number | null>(null);
 
   // Mirror frequently-changing values into refs for stable observer callbacks
   const chaptersRef = useRef<Chapter[]>([]);
@@ -75,8 +127,14 @@ export const ReaderViewport = memo(function ReaderViewport({
   infiniteRef.current = infinite;
   const onChangeRef = useRef(onPositionChange);
   onChangeRef.current = onPositionChange;
+  const onViewedRef = useRef(onViewedChange);
+  onViewedRef.current = onViewedChange;
   const ttsActiveRef = useRef(ttsActive);
   ttsActiveRef.current = ttsActive;
+  const detachedRef = useRef(detached);
+  detachedRef.current = detached;
+  const selMenuRef = useRef<SelectionMenuState | null>(null);
+  selMenuRef.current = selMenu;
 
   // Initial chapter load (mount-only — parent remounts this component to navigate)
   useEffect(() => {
@@ -109,9 +167,9 @@ export const ReaderViewport = memo(function ReaderViewport({
   }, [novelId, totalChapters]);
 
   /**
-   * Unload chapters that are 2+ behind the active reading position. The
-   * removed section's height is subtracted from scrollTop in a layout effect,
-   * so the visible text doesn't move a pixel.
+   * Unload chapters 2+ behind the active reading position. The removed
+   * section's height is subtracted from scrollTop in a layout effect, so the
+   * visible text doesn't move a pixel.
    */
   const pruneIfNeeded = useCallback((activeChapter: number) => {
     const list = chaptersRef.current;
@@ -155,7 +213,7 @@ export const ReaderViewport = memo(function ReaderViewport({
     return cb;
   };
 
-  // Track the topmost visible paragraph -> (chapter, paragraph) position
+  // Track the topmost visible paragraph -> viewed position + reading progress
   useEffect(() => {
     const root = containerRef.current;
     if (!root) return;
@@ -172,11 +230,13 @@ export const ReaderViewport = memo(function ReaderViewport({
           const min = Math.min(...visible);
           const chapterIndex = Math.floor(min / POS_FACTOR);
           const paragraphIndex = min % POS_FACTOR;
-          // While listening, the audio owns the reading position
-          if (!ttsActiveRef.current) {
-            const ch = chaptersRef.current.find((c) => c.chapterIndex === chapterIndex);
-            onChangeRef.current(chapterIndex, paragraphIndex, ch?.paragraphs.length ?? 1);
-          }
+          const len =
+            chaptersRef.current.find((c) => c.chapterIndex === chapterIndex)?.paragraphs.length ??
+            1;
+          // The status bar always shows what the EYES see…
+          onViewedRef.current(chapterIndex, paragraphIndex, len);
+          // …but reading progress belongs to the audio while it's playing
+          if (!ttsActiveRef.current) onChangeRef.current(chapterIndex, paragraphIndex, len);
           pruneIfNeeded(chapterIndex);
         }
       },
@@ -203,27 +263,142 @@ export const ReaderViewport = memo(function ReaderViewport({
     }
   }, [chapters, startChapter, startParagraph]);
 
-  // Visual detachment: any manual scroll input while listening pauses auto-centering
-  useEffect(() => {
-    const root = containerRef.current;
-    if (!root) return;
-    const detach = (): void => {
-      if (ttsActiveRef.current) setDetached(true);
-    };
-    root.addEventListener('wheel', detach, { passive: true });
-    root.addEventListener('touchmove', detach, { passive: true });
-    return () => {
-      root.removeEventListener('wheel', detach);
-      root.removeEventListener('touchmove', detach);
-    };
+  /* --------------- visual detachment + 8s reattach grace --------------- */
+
+  const scheduleReattach = useCallback(() => {
+    if (reattachTimerRef.current !== null) window.clearTimeout(reattachTimerRef.current);
+    reattachTimerRef.current = window.setTimeout(() => setDetached(false), REATTACH_DELAY_MS);
   }, []);
 
   useEffect(() => {
-    if (!ttsActive) setDetached(false);
-  }, [ttsActive]);
+    const root = containerRef.current;
+    if (!root) return;
+    // Manual input detaches; any further scrolling (incl. momentum) keeps the
+    // 5s grace timer alive so we only snap back after true stillness.
+    const onInput = (): void => {
+      if (!ttsActiveRef.current) return;
+      setDetached(true);
+      scheduleReattach();
+    };
+    const onScroll = (): void => {
+      if (detachedRef.current) scheduleReattach();
+    };
+    root.addEventListener('wheel', onInput, { passive: true });
+    root.addEventListener('touchmove', onInput, { passive: true });
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      root.removeEventListener('wheel', onInput);
+      root.removeEventListener('touchmove', onInput);
+      root.removeEventListener('scroll', onScroll);
+      if (reattachTimerRef.current !== null) window.clearTimeout(reattachTimerRef.current);
+    };
+  }, [scheduleReattach]);
 
-  // Follow the spoken paragraph: sync position/progress, auto-center (unless
-  // detached), growing the window or appending the next chapter as needed
+  useEffect(() => {
+    if (!ttsActive) setDetached(false);
+    if (!detached && reattachTimerRef.current !== null) {
+      window.clearTimeout(reattachTimerRef.current);
+      reattachTimerRef.current = null;
+    }
+  }, [ttsActive, detached]);
+
+  /* ------------------- double-tap to seek (touch-safe) ------------------ */
+
+  const handleParagraphTap = (chapterIdx: number, paragraphIdx: number): void => {
+    const key = chapterIdx * POS_FACTOR + paragraphIdx;
+    const now = Date.now();
+    const last = lastTapRef.current;
+    lastTapRef.current = { key, time: now };
+    // Suppress text selection briefly so a double-tap never highlights words
+    setSuppressSelect(true);
+    if (suppressTimerRef.current !== null) window.clearTimeout(suppressTimerRef.current);
+    suppressTimerRef.current = window.setTimeout(() => setSuppressSelect(false), 450);
+    if (last.key === key && now - last.time < DOUBLE_TAP_MS) {
+      lastTapRef.current = { key: -1, time: 0 };
+      setDetached(false);
+      onSpeakFrom(chapterIdx, paragraphIdx);
+    }
+  };
+
+  /* --------- native text selection -> floating "Save note" menu --------- */
+
+  const computeSelection = useCallback((): void => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      setSelMenu(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (!text) {
+      setSelMenu(null);
+      return;
+    }
+    // Walk up from the boundary nodes to the paragraph wrappers (data-pos)
+    const findPosKey = (node: Node | null): number | null => {
+      let current: Node | null = node;
+      while (current) {
+        if (current instanceof HTMLElement && current.dataset.pos !== undefined) {
+          return Number(current.dataset.pos);
+        }
+        current = current.parentNode;
+      }
+      return null;
+    };
+    const anchorKey = findPosKey(sel.anchorNode);
+    const focusKey = findPosKey(sel.focusNode);
+    if (anchorKey === null || focusKey === null) {
+      setSelMenu(null); // selection escaped the chapter text
+      return;
+    }
+    const startKey = Math.min(anchorKey, focusKey);
+    const endKey = Math.max(anchorKey, focusKey);
+    const chapterIndex = Math.floor(startKey / POS_FACTOR);
+    const start = startKey % POS_FACTOR;
+    // Clamp cross-chapter selections to the starting chapter
+    const sameChapter = Math.floor(endKey / POS_FACTOR) === chapterIndex;
+    const chapterLen =
+      chaptersRef.current.find((c) => c.chapterIndex === chapterIndex)?.paragraphs.length ?? 1;
+    const end = sameChapter ? endKey % POS_FACTOR : chapterLen - 1;
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    setSelMenu({
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+      chapterIndex,
+      start,
+      end: Math.max(start, end),
+      text,
+    });
+  }, []);
+
+  // Keep the menu in sync with the live selection (and follow it on scroll)
+  useEffect(() => {
+    const onSelectionChange = (): void => {
+      if (selChangeTimerRef.current !== null) window.clearTimeout(selChangeTimerRef.current);
+      selChangeTimerRef.current = window.setTimeout(computeSelection, 250);
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    const root = containerRef.current;
+    const onScroll = (): void => {
+      if (selMenuRef.current) computeSelection();
+    };
+    root?.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      document.removeEventListener('selectionchange', onSelectionChange);
+      root?.removeEventListener('scroll', onScroll);
+      if (selChangeTimerRef.current !== null) window.clearTimeout(selChangeTimerRef.current);
+    };
+  }, [computeSelection]);
+
+  const saveSelection = (): void => {
+    const menu = selMenuRef.current;
+    if (!menu) return;
+    window.getSelection()?.removeAllRanges();
+    setSelMenu(null);
+    onSaveSelection(menu.chapterIndex, menu.start, menu.end, menu.text);
+  };
+
+  // Follow the spoken paragraph: sync progress, auto-center (unless detached),
+  // growing the window or appending the next chapter as needed
   useEffect(() => {
     if (!ttsActive) return;
     const spokenChapter = chaptersRef.current.find((c) => c.chapterIndex === ttsChapter);
@@ -298,58 +473,85 @@ export const ReaderViewport = memo(function ReaderViewport({
     <div className={cn('relative h-full', `theme-${theme}`)}>
       <div
         ref={containerRef}
+        onPointerUp={() => window.setTimeout(computeSelection, 50)}
         className="no-scrollbar h-full overflow-y-auto"
         style={{
           backgroundColor: 'var(--reader-bg)',
           color: 'var(--reader-fg)',
           overflowAnchor: 'none', // pruning compensates scrollTop manually
+          // Strictly 1:1 linear touch tracking on mobile
+          touchAction: 'pan-y',
+          overscrollBehaviorY: 'contain',
+          WebkitOverflowScrolling: 'touch',
+          // Chapter-boundary friction: proximity snap catches at the break,
+          // a second deliberate gesture crosses it. Disabled while the TTS
+          // auto-centering owns the scroll so smooth-centering isn't fought.
+          scrollSnapType: ttsActive && !detached ? undefined : 'y proximity',
         }}
       >
         <div
-          className="mx-auto w-full max-w-2xl px-5 pb-24"
+          className={cn('mx-auto w-full max-w-2xl px-5 pb-24', suppressSelect && 'select-none')}
           style={{
             fontSize: `${fontSize}px`,
             lineHeight,
             paddingTop: 'calc(env(safe-area-inset-top, 0px) + 64px)',
           }}
         >
-          {chapters.map((ch) => (
-            <section
-              key={ch.id}
-              ref={(el) => {
-                if (el) sectionRefs.current.set(ch.chapterIndex, el);
-                else sectionRefs.current.delete(ch.chapterIndex);
-              }}
-            >
-              <h2
-                className="mb-6 mt-12 font-semibold opacity-90 first:mt-0"
-                style={{ fontSize: '1.15em' }}
+          {chapters.map((ch) => {
+            const count = renderCounts.get(ch.chapterIndex) ?? 0;
+            const chapterDone = count >= ch.paragraphs.length;
+            const followsInBook = ch.chapterIndex + 1 < totalChapters;
+            return (
+              <section
+                key={ch.id}
+                ref={(el) => {
+                  if (el) sectionRefs.current.set(ch.chapterIndex, el);
+                  else sectionRefs.current.delete(ch.chapterIndex);
+                }}
               >
-                {ch.title}
-              </h2>
-              {ch.paragraphs.slice(0, renderCounts.get(ch.chapterIndex) ?? 0).map((text, i) => {
-                const posKey = ch.chapterIndex * POS_FACTOR + i;
-                return (
-                  <p
-                    key={i}
-                    data-pos={posKey}
-                    ref={getRefCallback(posKey)}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setDetached(false);
-                      onSpeakFrom(ch.chapterIndex, i);
-                    }}
-                    className={cn(
-                      'reader-paragraph mb-[0.9em] rounded-md transition-colors duration-300',
-                      ttsActive && posKey === ttsPosKey && '-mx-2 bg-accent/15 px-2',
-                    )}
+                <h2
+                  className="mb-6 mt-4 font-semibold opacity-90 first:mt-0"
+                  style={{ fontSize: '1.15em' }}
+                >
+                  {ch.title}
+                </h2>
+                {ch.paragraphs.slice(0, count).map((text, i) => {
+                  const posKey = ch.chapterIndex * POS_FACTOR + i;
+                  return (
+                    <p
+                      key={i}
+                      data-pos={posKey}
+                      ref={getRefCallback(posKey)}
+                      onClick={() => handleParagraphTap(ch.chapterIndex, i)}
+                      className={cn(
+                        'reader-paragraph mb-[0.9em] rounded-md transition-colors duration-300',
+                        notedKeys.has(posKey) &&
+                          'underline decoration-accent/40 decoration-[1.5px] underline-offset-4',
+                        ttsActive && posKey === ttsPosKey && '-mx-2 bg-accent/15 px-2',
+                      )}
+                    >
+                      {text}
+                    </p>
+                  );
+                })}
+
+                {/* Chapter break: snap point adds deliberate friction (the "bounce") */}
+                {chapterDone && followsInBook && infinite && (
+                  <div
+                    aria-hidden="true"
+                    className="my-10 flex select-none flex-col items-center gap-2 py-10"
+                    style={{ scrollSnapAlign: 'end', scrollSnapStop: 'always' }}
                   >
-                    {text}
-                  </p>
-                );
-              })}
-            </section>
-          ))}
+                    <div className="h-px w-2/3 bg-current opacity-20" />
+                    <p className="text-xs uppercase tracking-widest opacity-40">
+                      End of {ch.title}
+                    </p>
+                    <div className="h-px w-2/3 bg-current opacity-20" />
+                  </div>
+                )}
+              </section>
+            );
+          })}
 
           {morePossible && <div ref={sentinelRef} className="h-10" aria-hidden="true" />}
 
@@ -371,6 +573,28 @@ export const ReaderViewport = memo(function ReaderViewport({
           )}
         </div>
       </div>
+
+      {/* Floating action menu over the native selection */}
+      {selMenu && (
+        <div
+          className="fixed z-30 -translate-x-1/2 -translate-y-full"
+          style={{
+            left: selMenu.x,
+            top: Math.max(selMenu.y - 8, 64),
+          }}
+        >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              saveSelection();
+            }}
+            className="flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-on-accent shadow-lg transition-colors hover:bg-accent-hov"
+          >
+            <StickyNote className="h-3.5 w-3.5" aria-hidden="true" />
+            Save note
+          </button>
+        </div>
+      )}
 
       {/* Visual detachment: snap back to the spoken paragraph */}
       {ttsActive && detached && (

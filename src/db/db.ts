@@ -34,7 +34,12 @@ export interface Note {
   id: string;
   novelId: string;
   chapterIndex: number;
-  paragraphIndex: number;
+  /** Selection range — both indices inclusive, within chapterIndex. */
+  startParagraphIndex: number;
+  endParagraphIndex: number;
+  /** Raw snapshot of the selected passage (selection.toString()). */
+  selectedText: string;
+  /** Optional user annotation ('' when the selection was saved directly). */
   text: string;
   timestamp: number;
 }

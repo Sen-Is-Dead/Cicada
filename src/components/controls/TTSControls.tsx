@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Headphones, Pause, Play, SkipBack, SkipForward, Square } from 'lucide-react';
-import { useTtsStore } from '../../store/ttsStore';
+import {
+  TTS_MAX_PITCH,
+  TTS_MAX_RATE,
+  TTS_MIN_PITCH,
+  TTS_MIN_RATE,
+  useTtsStore,
+} from '../../store/ttsStore';
 
 /* ------------------------------ playback bar ------------------------------ */
 
@@ -119,10 +125,10 @@ export function TTSVoiceSettings({ onChanged }: TTSVoiceSettingsProps) {
         </span>
         <input
           type="range"
-          min={0.5}
-          max={2}
+          min={TTS_MIN_RATE}
+          max={TTS_MAX_RATE}
           step={0.05}
-          value={rate}
+          value={Math.min(rate, TTS_MAX_RATE)}
           onChange={(e) => setRate(Number(e.target.value))}
           onPointerUp={onChanged}
           className="accent-accent"
@@ -134,10 +140,10 @@ export function TTSVoiceSettings({ onChanged }: TTSVoiceSettingsProps) {
         </span>
         <input
           type="range"
-          min={0.5}
-          max={2}
+          min={TTS_MIN_PITCH}
+          max={TTS_MAX_PITCH}
           step={0.05}
-          value={pitch}
+          value={Math.min(pitch, TTS_MAX_PITCH)}
           onChange={(e) => setPitch(Number(e.target.value))}
           onPointerUp={onChanged}
           className="accent-accent"

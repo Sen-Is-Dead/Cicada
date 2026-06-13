@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2 } from 'lucide-react';
+import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2, StickyNote, Trash2 } from 'lucide-react';
 import { db } from '../../db/db';
 import { EditBookModal } from './EditBookModal';
 import { cn } from '../../lib/utils';
@@ -17,6 +17,18 @@ export function BookDetailPage() {
   const { novelId } = useParams<{ novelId: string }>();
   const novel = useLiveQuery(() => (novelId ? db.novels.get(novelId) : undefined), [novelId]);
   const progress = useLiveQuery(() => (novelId ? db.progress.get(novelId) : undefined), [novelId]);
+  const notes = useLiveQuery(
+    () =>
+      novelId
+        ? db.notes
+            .where('novelId')
+            .equals(novelId)
+            .sortBy('timestamp')
+            .then((list) => list.reverse())
+        : [],
+    [novelId],
+    [],
+  );
 
   const [titles, setTitles] = useState<string[] | null>(null);
   const [listCount, setListCount] = useState(LIST_CHUNK);
@@ -166,6 +178,44 @@ export function BookDetailPage() {
             {hasProgress ? `Continue — Chapter ${currentChapter + 1}` : 'Start reading'}
           </Link>
         </div>
+
+        {/* Notes (saved via long-press in the reader) */}
+        {notes.length > 0 && (
+          <>
+            <h2 className="flex items-center gap-1.5 px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-faint">
+              <StickyNote className="h-3.5 w-3.5" aria-hidden="true" />
+              Notes ({notes.length})
+            </h2>
+            <ul>
+              {notes.map((note) => (
+                <li key={note.id} className="flex items-start gap-2 border-b border-edge/60 px-4 py-2.5">
+                  <Link
+                    to={`/reader/${novel.id}?chapter=${note.chapterIndex}`}
+                    className="min-w-0 flex-1"
+                  >
+                    <p className="line-clamp-2 text-sm italic leading-snug text-muted">
+                      “{note.selectedText || note.text}”
+                    </p>
+                    {note.text && note.selectedText && (
+                      <p className="mt-0.5 text-sm leading-snug text-main">{note.text}</p>
+                    )}
+                    <p className="mt-0.5 text-xs text-faint">
+                      Chapter {note.chapterIndex + 1} ·{' '}
+                      {new Date(note.timestamp).toLocaleDateString()}
+                    </p>
+                  </Link>
+                  <button
+                    onClick={() => void db.notes.delete(note.id)}
+                    aria-label="Delete note"
+                    className="shrink-0 rounded p-1 text-muted hover:text-red-400"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
 
         {/* Chapter list */}
         <h2 className="px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-faint">
