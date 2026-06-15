@@ -31,6 +31,19 @@ const PAUSE_BETWEEN_PARAGRAPHS_MS = 200;
 const CHAPTER_TITLE_PAUSE_MS = 2000; // breath before announcing a new chapter
 const KEEPALIVE_INTERVAL_MS = 10_000;
 
+/**
+ * Mobile Web Speech engines (Android Chrome, iOS Safari) need the queue to fully
+ * settle before speak() — otherwise the first word(s) of an utterance are clipped.
+ * We flush, wait this long, then speak. Desktop speaks immediately (settle = 0).
+ */
+const MOBILE_SPEAK_SETTLE_MS = 150;
+
+const IS_MOBILE =
+  typeof navigator !== 'undefined' &&
+  (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    // iPadOS 13+ reports as desktop Safari; detect via touch points
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
 // Hard engine ceilings (also clamps stale persisted values from older builds)
 const clampRate = (v: number): number => Math.min(TTS_MAX_RATE, Math.max(TTS_MIN_RATE, v));
 const clampPitch = (v: number): number => Math.min(TTS_MAX_PITCH, Math.max(TTS_MIN_PITCH, v));
@@ -176,6 +189,30 @@ export function useTTS(
       return utterance;
     };
 
+    /**
+     * Speak an utterance safely on every platform.
+     *
+     * On mobile the engine drops the start of a paragraph when speak() races a
+     * not-yet-settled queue (e.g. right after a chained onend, a cancel, or the
+     * lock-screen resume). We always flush first, then on mobile defer the speak
+     * by a short settle so the engine is clean before it starts. The generation
+     * guard cancels the deferred speak if the user skips/seeks/pauses meanwhile.
+     */
+    const speakUtterance = (utterance: SpeechSynthesisUtterance, gen: number): void => {
+      const s = synth();
+      if (!s) return;
+      s.cancel(); // flush any residual/stuck utterance before starting a new one
+      const fire = (): void => {
+        if (gen !== generation || status !== 'playing') return;
+        s.speak(utterance);
+      };
+      if (IS_MOBILE) {
+        timer = window.setTimeout(fire, MOBILE_SPEAK_SETTLE_MS);
+      } else {
+        fire();
+      }
+    };
+
     /** Announce the current chapter's title, then continue into paragraph 0. */
     const speakChapterTitle = (): void => {
       const s = synth();
@@ -192,7 +229,7 @@ export function useTTS(
           timer = window.setTimeout(speakCurrent, 300);
         }
       };
-      s.speak(utterance);
+      speakUtterance(utterance, gen);
       useTtsStore.getState().setTtsPosition(ch.chapterIndex, 0);
       useReaderStore.getState().setPosition(ch.chapterIndex, 0);
     };
@@ -223,7 +260,7 @@ export function useTTS(
         }
       };
 
-      s.speak(utterance);
+      speakUtterance(utterance, gen);
       // Publish position: highlighter + reading progress stay in sync (spec Phase 4)
       useTtsStore.getState().setTtsPosition(ch.chapterIndex, idx);
       useReaderStore.getState().setPosition(ch.chapterIndex, idx);
@@ -396,10 +433,13 @@ export function useTTS(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Chrome desktop drops long sessions; periodic resume() keeps it alive
+  // Chrome DESKTOP drops long sessions; periodic resume() keeps it alive.
+  // On mobile this same resume() clips the start of the utterance that happens
+  // to be starting when the interval fires — and the silent-audio hack already
+  // keeps the mobile session alive — so the keepalive is desktop-only.
   const status = useTtsStore((s) => s.status);
   useEffect(() => {
-    if (status !== 'playing') return;
+    if (status !== 'playing' || IS_MOBILE) return;
     const id = window.setInterval(() => {
       const s = window.speechSynthesis;
       if (s && s.speaking && !s.paused) s.resume();
