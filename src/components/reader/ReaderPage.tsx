@@ -37,6 +37,7 @@ export function ReaderPage() {
   const setInfinite = useReaderStore((s) => s.setInfiniteScroll);
   const openNovel = useReaderStore((s) => s.openNovel);
   const setPosition = useReaderStore((s) => s.setPosition);
+  const theme = useReaderStore((s) => s.theme);
 
   const novel = useLiveQuery(() => (novelId ? db.novels.get(novelId) : undefined), [novelId]);
 
@@ -281,7 +282,7 @@ export function ReaderPage() {
   const chapterTitle = novel?.chapterTitles?.[viewedChapter] ?? `Chapter ${viewedChapter + 1}`;
 
   return (
-    <main className="relative h-full overflow-hidden">
+    <main className={cn('relative h-full overflow-hidden', `theme-${theme}`)}>
       {anchor && novel ? (
         <div className="h-full" onClick={toggleChrome}>
           <ReaderViewport

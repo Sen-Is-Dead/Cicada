@@ -120,17 +120,43 @@ body {
 
 /* ---------- Reader surface themes (CSS variables for ReaderViewport) ---------- */
 
+/*
+ * Each reader theme drives BOTH the novel surface (--reader-*) AND the page
+ * chrome tokens (--c-*). Applied to the reader page root so the top/bottom bars,
+ * play/pause, chapter title and counter all follow the dark/light/sepia choice.
+ */
 .theme-dark {
   --reader-bg: #09090b;
   --reader-fg: #d4d4d8;
+  --c-app: 9 9 11;
+  --c-surface: 24 24 27;
+  --c-surface2: 39 39 42;
+  --c-edge: 39 39 42;
+  --c-text: 244 244 245;
+  --c-muted: 161 161 170;
+  --c-faint: 113 113 122;
 }
 
 .theme-light {
   --reader-bg: #fafaf9;
   --reader-fg: #292524;
+  --c-app: 250 250 249;
+  --c-surface: 255 255 255;
+  --c-surface2: 231 229 228;
+  --c-edge: 214 211 209;
+  --c-text: 28 25 23;
+  --c-muted: 87 83 78;
+  --c-faint: 168 162 158;
 }
 
 .theme-sepia {
   --reader-bg: #f1e7d0;
   --reader-fg: #4b3a2a;
+  --c-app: 241 231 208;
+  --c-surface: 245 236 217;
+  --c-surface2: 230 217 191;
+  --c-edge: 216 200 170;
+  --c-text: 75 58 42;
+  --c-muted: 122 100 78;
+  --c-faint: 163 143 117;
 }
