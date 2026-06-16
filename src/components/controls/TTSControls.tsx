@@ -19,7 +19,17 @@ import { cn } from '../../lib/utils';
 
 /* ------------------------------ playback bar ------------------------------ */
 
-const SLEEP_PRESETS_MIN = [5, 10, 15, 20, 30, 45, 60];
+const SLEEP_PRESETS_MIN = [10, 15, 20, 30, 45, 60];
+const SLEEP_PRESETS_CH = [1, 2, 3, 4, 5];
+
+/**
+ * The sleep timer can fire on either a wall-clock deadline ('time') or after a
+ * number of chapters have been read ('chapters'). For the chapter mode we store
+ * the absolute target chapterIndex; once the engine reaches it, playback pauses.
+ */
+type SleepState =
+  | { kind: 'time'; until: number }
+  | { kind: 'chapters'; target: number; count: number };
 
 interface TTSControlsProps {
   onListen: () => void;
@@ -31,44 +41,67 @@ interface TTSControlsProps {
 
 export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTSControlsProps) {
   const status = useTtsStore((s) => s.status);
+  const chapterIndex = useTtsStore((s) => s.chapterIndex);
 
-  /* Sleep timer (whole minutes only) — pauses playback when it expires */
-  const [sleepUntil, setSleepUntil] = useState<number | null>(null);
+  /* Sleep timer — fires on a minute deadline or after N chapters */
+  const [sleep, setSleep] = useState<SleepState | null>(null);
   const [sleepOpen, setSleepOpen] = useState(false);
   const [customMin, setCustomMin] = useState('');
   const [, setTick] = useState(0); // refresh the remaining-minutes label
 
+  // Time mode: poll the deadline
   useEffect(() => {
-    if (sleepUntil === null) return;
+    if (sleep?.kind !== 'time') return;
     const id = window.setInterval(() => {
-      if (Date.now() >= sleepUntil) {
-        setSleepUntil(null);
+      if (Date.now() >= sleep.until) {
+        setSleep(null);
         onPause(); // no-op unless playing
       } else {
         setTick((t) => t + 1);
       }
     }, 5000);
     return () => window.clearInterval(id);
-  }, [sleepUntil, onPause]);
+  }, [sleep, onPause]);
+
+  // Chapter mode: pause once the engine reaches the target chapter
+  useEffect(() => {
+    if (sleep?.kind !== 'chapters') return;
+    if (chapterIndex >= sleep.target) {
+      setSleep(null);
+      onPause();
+    }
+  }, [sleep, chapterIndex, onPause]);
 
   // Ending the session clears the timer
   useEffect(() => {
     if (status === 'idle') {
-      setSleepUntil(null);
+      setSleep(null);
       setSleepOpen(false);
     }
   }, [status]);
 
-  const startSleep = (minutes: number): void => {
+  const startSleepMinutes = (minutes: number): void => {
     const whole = Math.floor(minutes);
     if (!Number.isFinite(whole) || whole < 1) return;
-    setSleepUntil(Date.now() + whole * 60_000);
+    setSleep({ kind: 'time', until: Date.now() + whole * 60_000 });
     setSleepOpen(false);
     setCustomMin('');
   };
 
+  const startSleepChapters = (count: number): void => {
+    if (!Number.isFinite(count) || count < 1) return;
+    // target is absolute: the chapter at which we've finished `count` chapters
+    setSleep({ kind: 'chapters', target: chapterIndex + count, count });
+    setSleepOpen(false);
+  };
+
   const remainingMin =
-    sleepUntil !== null ? Math.max(1, Math.ceil((sleepUntil - Date.now()) / 60_000)) : null;
+    sleep?.kind === 'time' ? Math.max(1, Math.ceil((sleep.until - Date.now()) / 60_000)) : null;
+  const remainingCh =
+    sleep?.kind === 'chapters' ? Math.max(1, sleep.target - chapterIndex) : null;
+  const sleepActive = sleep !== null;
+  const sleepBadge =
+    remainingMin !== null ? `${remainingMin}m` : remainingCh !== null ? `${remainingCh} ch` : null;
 
   if (status === 'idle') {
     return (
@@ -94,35 +127,59 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
           aria-expanded={sleepOpen}
           className={cn(
             'flex items-center gap-1 rounded-md p-1.5 text-xs transition-colors hover:bg-surface2',
-            remainingMin !== null ? 'text-accent' : 'text-muted hover:text-main',
+            sleepActive ? 'text-accent' : 'text-muted hover:text-main',
           )}
         >
           <Timer className="h-5 w-5" />
-          {remainingMin !== null && <span className="font-medium">{remainingMin}m</span>}
+          {sleepBadge !== null && <span className="font-medium">{sleepBadge}</span>}
         </button>
 
         {sleepOpen && (
-          <div className="absolute bottom-full left-0 mb-2 w-44 rounded-xl border border-edge bg-surface p-2 shadow-xl">
+          <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl border border-edge bg-surface p-2 shadow-xl">
             <p className="px-1 pb-1 text-xs text-faint">Sleep timer</p>
-            {remainingMin !== null && (
+            {sleepActive && (
               <button
                 onClick={() => {
-                  setSleepUntil(null);
+                  setSleep(null);
                   setSleepOpen(false);
                 }}
-                className="w-full rounded-md px-2 py-1.5 text-left text-sm text-red-400 hover:bg-surface2"
+                className="mb-1 w-full rounded-md px-2 py-1.5 text-left text-sm text-red-400 hover:bg-surface2"
               >
-                Turn off
+                Turn off{sleepBadge ? ` · ${sleepBadge} left` : ''}
               </button>
             )}
-            <div className="grid grid-cols-2 gap-1">
+
+            <p className="px-1 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-faint">
+              After chapters
+            </p>
+            <div className="grid grid-cols-5 gap-1">
+              {SLEEP_PRESETS_CH.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => startSleepChapters(c)}
+                  className={cn(
+                    'rounded-md py-1.5 text-sm hover:bg-surface2 hover:text-main',
+                    sleep?.kind === 'chapters' && sleep.count === c
+                      ? 'bg-surface2 text-accent'
+                      : 'text-muted',
+                  )}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+
+            <p className="px-1 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-faint">
+              After minutes
+            </p>
+            <div className="grid grid-cols-3 gap-1">
               {SLEEP_PRESETS_MIN.map((m) => (
                 <button
                   key={m}
-                  onClick={() => startSleep(m)}
+                  onClick={() => startSleepMinutes(m)}
                   className="rounded-md px-2 py-1.5 text-sm text-muted hover:bg-surface2 hover:text-main"
                 >
-                  {m} min
+                  {m}m
                 </button>
               ))}
             </div>
@@ -135,14 +192,14 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
                 value={customMin}
                 onChange={(e) => setCustomMin(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') startSleep(Number(customMin));
+                  if (e.key === 'Enter') startSleepMinutes(Number(customMin));
                 }}
-                placeholder="Custom"
+                placeholder="Custom min"
                 aria-label="Custom minutes"
                 className="w-full min-w-0 rounded-md border border-edge bg-app px-2 py-1 text-sm text-main outline-none focus:border-accent"
               />
               <button
-                onClick={() => startSleep(Number(customMin))}
+                onClick={() => startSleepMinutes(Number(customMin))}
                 disabled={Math.floor(Number(customMin)) < 1}
                 className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-on-accent hover:bg-accent-hov disabled:opacity-40"
               >

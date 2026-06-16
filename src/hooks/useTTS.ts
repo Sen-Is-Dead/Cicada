@@ -26,9 +26,9 @@ import { applyFixes, compileRules, type CompiledRule } from '../lib/textFixer';
  *   active DictionaryRules pulled from Dexie at session start.
  */
 
-const PAUSE_AFTER_QUOTE_OR_BANG_MS = 600;
-const PAUSE_BETWEEN_PARAGRAPHS_MS = 200;
-const CHAPTER_TITLE_PAUSE_MS = 2000; // breath before announcing a new chapter
+const PAUSE_AFTER_QUOTE_OR_BANG_MS = 200;
+const PAUSE_BETWEEN_PARAGRAPHS_MS = 75;
+const CHAPTER_TITLE_PAUSE_MS = 1500; // breath before announcing a new chapter
 const KEEPALIVE_INTERVAL_MS = 10_000;
 
 /**
@@ -42,6 +42,13 @@ const IS_MOBILE =
   typeof navigator !== 'undefined' &&
   (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     // iPadOS 13+ reports as desktop Safari; detect via touch points
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+// iOS Safari boots speechSynthesis in a *paused* state, so the very first
+// speak() of a session queues but never plays until resume() is called once.
+const IS_IOS =
+  typeof navigator !== 'undefined' &&
+  (/iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
 
 // Hard engine ceilings (also clamps stale persisted values from older builds)
@@ -205,6 +212,10 @@ export function useTTS(
       const fire = (): void => {
         if (gen !== generation || status !== 'playing') return;
         s.speak(utterance);
+        // iOS Safari queues the utterance in a paused state on the first speak()
+        // of a session — it shows as "playing" but stays silent until resumed.
+        // A resume() right after speak() kicks it into actually playing.
+        if (IS_IOS) s.resume();
       };
       if (IS_MOBILE) {
         timer = window.setTimeout(fire, MOBILE_SPEAK_SETTLE_MS);
@@ -435,8 +446,8 @@ export function useTTS(
 
   // Chrome DESKTOP drops long sessions; periodic resume() keeps it alive.
   // On mobile this same resume() clips the start of the utterance that happens
-  // to be starting when the interval fires — and the silent-audio hack already
-  // keeps the mobile session alive — so the keepalive is desktop-only.
+  // to be starting when the interval fires, and the silent-audio hack already
+  // keeps the mobile session alive, so the keepalive is desktop-only.
   const status = useTtsStore((s) => s.status);
   useEffect(() => {
     if (status !== 'playing' || IS_MOBILE) return;
