@@ -27,6 +27,7 @@ interface TtsState {
   status: TtsStatus;
   rate: number; // 0.5–2
   pitch: number; // 0.5–2
+  volume: number; // 0–1 (desktop only; mobile uses hardware volume)
   voiceURI: string | null; // null = system default
   // Paragraph currently being spoken
   chapterIndex: number;
@@ -34,6 +35,7 @@ interface TtsState {
   setStatus: (status: TtsStatus) => void;
   setRate: (rate: number) => void;
   setPitch: (pitch: number) => void;
+  setVolume: (volume: number) => void;
   setVoiceURI: (voiceURI: string | null) => void;
   setTtsPosition: (chapterIndex: number, paragraphIndex: number) => void;
 }
@@ -44,18 +46,25 @@ export const useTtsStore = create<TtsState>()(
       status: 'idle',
       rate: 1,
       pitch: 1,
+      volume: 1,
       voiceURI: null,
       chapterIndex: 0,
       paragraphIndex: 0,
       setStatus: (status) => set({ status }),
       setRate: (rate) => set({ rate: clamp(rate, TTS_MIN_RATE, TTS_MAX_RATE) }),
       setPitch: (pitch) => set({ pitch: clamp(pitch, TTS_MIN_PITCH, TTS_MAX_PITCH) }),
+      setVolume: (volume) => set({ volume: clamp(volume, 0, 1) }),
       setVoiceURI: (voiceURI) => set({ voiceURI }),
       setTtsPosition: (chapterIndex, paragraphIndex) => set({ chapterIndex, paragraphIndex }),
     }),
     {
       name: 'cicada-tts-settings',
-      partialize: (s) => ({ rate: s.rate, pitch: s.pitch, voiceURI: s.voiceURI }),
+      partialize: (s) => ({
+        rate: s.rate,
+        pitch: s.pitch,
+        volume: s.volume,
+        voiceURI: s.voiceURI,
+      }),
     },
   ),
 );

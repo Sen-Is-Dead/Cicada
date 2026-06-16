@@ -22,6 +22,13 @@ import { cn } from '../../lib/utils';
 const SLEEP_PRESETS_MIN = [10, 15, 20, 30, 45, 60];
 const SLEEP_PRESETS_CH = [1, 2, 3, 4, 5];
 
+// Volume control is desktop-only — phones/tablets use their hardware buttons,
+// which already adjust the speech output, so a software slider is redundant there.
+const IS_DESKTOP =
+  typeof navigator === 'undefined' ||
+  !(/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
 /**
  * The sleep timer can fire on either a wall-clock deadline ('time') or after a
  * number of chapters have been read ('chapters'). For the chapter mode we store
@@ -262,9 +269,11 @@ interface TTSVoiceSettingsProps {
 export function TTSVoiceSettings({ onChanged }: TTSVoiceSettingsProps) {
   const rate = useTtsStore((s) => s.rate);
   const pitch = useTtsStore((s) => s.pitch);
+  const volume = useTtsStore((s) => s.volume);
   const voiceURI = useTtsStore((s) => s.voiceURI);
   const setRate = useTtsStore((s) => s.setRate);
   const setPitch = useTtsStore((s) => s.setPitch);
+  const setVolume = useTtsStore((s) => s.setVolume);
   const setVoiceURI = useTtsStore((s) => s.setVoiceURI);
 
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -327,6 +336,23 @@ export function TTSVoiceSettings({ onChanged }: TTSVoiceSettingsProps) {
           className="accent-accent"
         />
       </label>
+      {IS_DESKTOP && (
+        <label className="flex flex-col gap-1 text-xs text-muted">
+          <span className="flex justify-between">
+            Volume <span className="text-main">{Math.round(volume * 100)}%</span>
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            onPointerUp={onChanged}
+            className="accent-accent"
+          />
+        </label>
+      )}
     </div>
   );
 }

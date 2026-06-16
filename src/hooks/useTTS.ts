@@ -186,9 +186,10 @@ export function useTTS(
 
     const makeUtterance = (text: string): SpeechSynthesisUtterance => {
       const utterance = new SpeechSynthesisUtterance(text);
-      const { rate, pitch, voiceURI } = useTtsStore.getState();
+      const { rate, pitch, volume, voiceURI } = useTtsStore.getState();
       utterance.rate = clampRate(rate);
       utterance.pitch = clampPitch(pitch);
+      utterance.volume = Math.min(1, Math.max(0, volume));
       if (voiceURI) {
         const voice = synth()?.getVoices().find((v) => v.voiceURI === voiceURI);
         if (voice) utterance.voice = voice;
