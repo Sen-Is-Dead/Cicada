@@ -28,7 +28,7 @@ import { applyFixes, compileRules, type CompiledRule } from '../lib/textFixer';
 
 const PAUSE_AFTER_QUOTE_OR_BANG_MS = 200;
 const PAUSE_BETWEEN_PARAGRAPHS_MS = 75;
-const CHAPTER_TITLE_PAUSE_MS = 1500; // breath before announcing a new chapter
+const CHAPTER_TITLE_PAUSE_MS = 750; // breath before announcing a new chapter
 const KEEPALIVE_INTERVAL_MS = 10_000;
 
 /**
