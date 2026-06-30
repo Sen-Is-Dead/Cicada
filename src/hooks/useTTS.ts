@@ -73,6 +73,8 @@ export interface TtsEngine {
   refreshSettings: () => void;
   /** Re-fetch dictionary rules (after edits in the Translation Fixer UI). */
   reloadRules: () => Promise<void>;
+  /** Recover playback if the OS suspended the engine while backgrounded. */
+  nudge: () => void;
 }
 
 export function useTTS(
@@ -441,7 +443,25 @@ export function useTTS(
       speakCurrent();
     };
 
-    return { start, pause, resume, stop, skip, seekTo, refreshSettings, reloadRules };
+    /**
+     * Recover playback after the OS suspended the speech engine in the
+     * background (common on Android when the app is minimised or the screen
+     * turns off). If we still believe we're playing but the engine has gone
+     * silent OUTSIDE a deliberate pacing gap (timer === null), continue the
+     * current paragraph; if it merely paused, resume. Never interrupts speech
+     * that is actually still playing, so it cannot cause start-of-word clipping.
+     */
+    const nudge = (): void => {
+      const s = synth();
+      if (!s || status !== 'playing') return;
+      if (s.paused) {
+        s.resume();
+        return;
+      }
+      if (!s.speaking && timer === null) speakCurrent();
+    };
+
+    return { start, pause, resume, stop, skip, seekTo, refreshSettings, reloadRules, nudge };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -458,6 +478,24 @@ export function useTTS(
     }, KEEPALIVE_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [status]);
+
+  // Mobile: Android (and iOS) suspend speechSynthesis while the app is
+  // backgrounded. When the page returns to the foreground we continue from where
+  // playback died; we also poll while it's minimised-but-visible, since timers
+  // keep running (throttled) in that state. nudge() is a no-op during normal
+  // playback and during pacing gaps, so it only acts when the engine has died.
+  useEffect(() => {
+    if (!IS_MOBILE || status !== 'playing') return;
+    const onVisible = (): void => {
+      if (!document.hidden) engine.nudge();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const id = window.setInterval(() => engine.nudge(), 4000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.clearInterval(id);
+    };
+  }, [status, engine]);
 
   // Hard stop when the reader unmounts (navigation away)
   useEffect(() => () => engine.stop(), [engine]);
