@@ -172,6 +172,34 @@ export function useTTS(
       });
     };
 
+    /**
+     * Publish a real media-session position (chapter length as duration,
+     * paragraph as position) so Android/iOS see a deliberate, fully-featured
+     * media session — which makes the OS less likely to cull the background
+     * audio as a rogue process.
+     */
+    const updatePositionState = (): void => {
+      if (
+        !('mediaSession' in navigator) ||
+        typeof navigator.mediaSession.setPositionState !== 'function'
+      )
+        return;
+      const ch = chapterRef.current;
+      if (!ch) return;
+      const duration = Math.max(1, ch.paragraphs.length);
+      const position = Math.min(Math.max(paragraphIndex, 0), duration);
+      const { rate } = useTtsStore.getState();
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          position,
+          playbackRate: clampRate(rate),
+        });
+      } catch {
+        /* invalid position state — ignore */
+      }
+    };
+
     const setupMediaSession = (chapterTitle: string): void => {
       if (!('mediaSession' in navigator)) return;
       updateMetadata(chapterTitle);
@@ -183,6 +211,19 @@ export function useTTS(
         navigator.mediaSession.setActionHandler('stop', () => stop());
       } catch {
         /* 'stop' unsupported on some platforms */
+      }
+      // Lock-screen scrubber + seek buttons map to paragraph navigation, so the
+      // session exposes the full transport the OS expects from real media.
+      try {
+        navigator.mediaSession.setActionHandler('seekforward', () => skip(1));
+        navigator.mediaSession.setActionHandler('seekbackward', () => skip(-1));
+        navigator.mediaSession.setActionHandler('seekto', (details) => {
+          const cur = chapterRef.current;
+          if (!cur || details.seekTime == null) return;
+          void seekTo(cur.chapterIndex, Math.round(details.seekTime));
+        });
+      } catch {
+        /* seek actions unsupported on some platforms */
       }
     };
 
@@ -246,6 +287,7 @@ export function useTTS(
       speakUtterance(utterance, gen);
       useTtsStore.getState().setTtsPosition(ch.chapterIndex, 0);
       useReaderStore.getState().setPosition(ch.chapterIndex, 0);
+      updatePositionState();
     };
 
     const speakCurrent = (): void => {
@@ -278,6 +320,7 @@ export function useTTS(
       // Publish position: highlighter + reading progress stay in sync (spec Phase 4)
       useTtsStore.getState().setTtsPosition(ch.chapterIndex, idx);
       useReaderStore.getState().setPosition(ch.chapterIndex, idx);
+      updatePositionState();
     };
 
     const advanceParagraph = (): void => {
