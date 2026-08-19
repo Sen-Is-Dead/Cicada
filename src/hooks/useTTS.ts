@@ -135,11 +135,48 @@ export function useTTS(
       }
     };
 
+    /**
+     * (Re)start the silent loop robustly. After a long backgrounded pause —
+     * AirPods pause, Control Center pause, or the app sitting in the background
+     * — iOS tears the audio session down and quietly rejects (or stalls) a
+     * plain play() on the stale element. Without the loop actually playing the
+     * OS kills speechSynthesis the moment the screen locks or the app is
+     * backgrounded again, which is exactly the "audio no longer persists in
+     * the background after resuming" bug. reload + retry resurrects the
+     * session; a post-play check catches the silent-stall case.
+     */
+    const playSilent = (): void => {
+      const el = audio;
+      if (!el) return;
+      const retry = (): void => {
+        // load() fires pause/emptied on the element — keep the bridge muted
+        suppressAudioEvents = true;
+        try {
+          el.load(); // rebuild the media resource → fresh audio session
+        } catch {
+          /* ignore */
+        }
+        void el.play().catch(() => undefined);
+        window.setTimeout(() => {
+          suppressAudioEvents = false;
+        }, 500);
+      };
+      el.play().then(
+        () => {
+          // Some iOS versions resolve play() yet leave the element paused/stalled
+          window.setTimeout(() => {
+            if (audio === el && el.paused && status === 'playing') retry();
+          }, 250);
+        },
+        retry,
+      );
+    };
+
     /** Control the silent loop without triggering the event bridge. */
     const silentCtl = (op: 'play' | 'pause'): void => {
       if (!audio) return;
       suppressAudioEvents = true;
-      if (op === 'play') void audio.play().catch(() => undefined);
+      if (op === 'play') playSilent();
       else audio.pause();
       window.setTimeout(() => {
         suppressAudioEvents = false;
@@ -402,9 +439,17 @@ export function useTTS(
     const resume = (fromAudio = false): void => {
       const s = synth();
       if (!s || status !== 'paused') return;
+      setStatus('playing'); // before playSilent so its stall-check sees 'playing'
       if (!fromAudio) silentCtl('play');
+      // A long pause in the background lets iOS drop the media session and the
+      // audio session with it — rebuild both so lock-screen controls and
+      // background playback survive the resume.
+      const ch = chapterRef.current;
+      if (ch) {
+        setupMediaSession(ch.title);
+        updatePositionState();
+      }
       s.resume();
-      setStatus('playing');
       // Fallback: if the queue was dropped while paused, restart the paragraph
       window.setTimeout(() => {
         if (status === 'playing' && !s.speaking) speakCurrent();
@@ -497,6 +542,9 @@ export function useTTS(
     const nudge = (): void => {
       const s = synth();
       if (!s || status !== 'playing') return;
+      // The OS may have culled the silent loop while backgrounded; without it
+      // the next screen-lock/app-switch kills speech. Revive it first.
+      if (audio && audio.paused) silentCtl('play');
       if (s.paused) {
         s.resume();
         return;

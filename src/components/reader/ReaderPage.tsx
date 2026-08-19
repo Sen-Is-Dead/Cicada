@@ -35,6 +35,8 @@ export function ReaderPage() {
   const currentParagraphIndex = useReaderStore((s) => s.currentParagraphIndex);
   const infinite = useReaderStore((s) => s.infiniteScroll);
   const setInfinite = useReaderStore((s) => s.setInfiniteScroll);
+  const paged = useReaderStore((s) => s.pagedMode);
+  const setPaged = useReaderStore((s) => s.setPagedMode);
   const openNovel = useReaderStore((s) => s.openNovel);
   const setPosition = useReaderStore((s) => s.setPosition);
   const theme = useReaderStore((s) => s.theme);
@@ -292,6 +294,7 @@ export function ReaderPage() {
             startChapter={anchor.chapter}
             startParagraph={anchor.paragraph}
             infinite={infinite}
+            paged={paged}
             onPositionChange={handlePosition}
             onViewedChange={handleViewed}
             onRequestChapter={goToChapter}
@@ -399,6 +402,20 @@ export function ReaderPage() {
               className="h-4 w-4 accent-accent"
             />
           </label>
+          <label className="flex items-center justify-between gap-2 text-xs text-muted">
+            <span>
+              Tap to turn pages
+              <span className="block text-[10px] text-faint">
+                Tap the left/right side of the screen to flip a page back/forward
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={paged}
+              onChange={(e) => setPaged(e.target.checked)}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
         </div>
       )}
 
@@ -412,6 +429,7 @@ export function ReaderPage() {
         onMouseLeave={scheduleHide}
       >
         <TTSControls
+          barsVisible={barsVisible}
           onListen={handleListen}
           onPause={tts.pause}
           onResume={tts.resume}

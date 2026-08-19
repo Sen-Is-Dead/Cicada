@@ -39,6 +39,8 @@ type SleepState =
   | { kind: 'chapters'; target: number; count: number };
 
 interface TTSControlsProps {
+  /** Whether the reader chrome (top/bottom bars) is currently shown. */
+  barsVisible: boolean;
   onListen: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -46,7 +48,14 @@ interface TTSControlsProps {
   onSkip: (delta: number) => void;
 }
 
-export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTSControlsProps) {
+export function TTSControls({
+  barsVisible,
+  onListen,
+  onPause,
+  onResume,
+  onStop,
+  onSkip,
+}: TTSControlsProps) {
   const status = useTtsStore((s) => s.status);
   const chapterIndex = useTtsStore((s) => s.chapterIndex);
 
@@ -54,7 +63,14 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
   const [sleep, setSleep] = useState<SleepState | null>(null);
   const [sleepOpen, setSleepOpen] = useState(false);
   const [customMin, setCustomMin] = useState('');
+  const [customCh, setCustomCh] = useState('');
   const [, setTick] = useState(0); // refresh the remaining-minutes label
+
+  // Hiding the chrome (tap on the page) must also dismiss the sleep panel —
+  // otherwise it floats alone at the bottom of the screen after the bars slide out.
+  useEffect(() => {
+    if (!barsVisible) setSleepOpen(false);
+  }, [barsVisible]);
 
   // Time mode: poll the deadline
   useEffect(() => {
@@ -96,10 +112,12 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
   };
 
   const startSleepChapters = (count: number): void => {
-    if (!Number.isFinite(count) || count < 1) return;
+    const whole = Math.floor(count);
+    if (!Number.isFinite(whole) || whole < 1) return;
     // target is absolute: the chapter at which we've finished `count` chapters
-    setSleep({ kind: 'chapters', target: chapterIndex + count, count });
+    setSleep({ kind: 'chapters', target: chapterIndex + whole, count: whole });
     setSleepOpen(false);
+    setCustomCh('');
   };
 
   const remainingMin =
@@ -174,6 +192,29 @@ export function TTSControls({ onListen, onPause, onResume, onStop, onSkip }: TTS
                   {c}
                 </button>
               ))}
+            </div>
+            <div className="mt-1 flex items-center gap-1">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={customCh}
+                onChange={(e) => setCustomCh(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') startSleepChapters(Number(customCh));
+                }}
+                placeholder="Custom chapters"
+                aria-label="Custom chapter count"
+                className="w-full min-w-0 rounded-md border border-edge bg-app px-2 py-1 text-sm text-main outline-none focus:border-accent"
+              />
+              <button
+                onClick={() => startSleepChapters(Number(customCh))}
+                disabled={Math.floor(Number(customCh)) < 1}
+                className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-on-accent hover:bg-accent-hov disabled:opacity-40"
+              >
+                Set
+              </button>
             </div>
 
             <p className="px-1 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-faint">

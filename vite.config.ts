@@ -8,7 +8,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       // silent.mp3 (TTS lock-screen hack, Phase 4) must be precached for offline use
-      includeAssets: ['silent.mp3'],
+      includeAssets: ['silent.mp3', 'favicon.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Cicada — Web Novel Reader',
         short_name: 'Cicada',
@@ -30,7 +30,8 @@ export default defineConfig({
             type: 'image/png',
           },
           {
-            src: 'pwa-512x512.png',
+            // Full-bleed variant — the OS applies its own mask/rounding
+            src: 'pwa-maskable-512x512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',

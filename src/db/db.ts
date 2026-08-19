@@ -12,6 +12,7 @@ export interface Novel {
   description?: string; // From EPUB metadata, or user-edited
   rating?: number; // 1–5 user rating
   chapterTitles?: string[]; // Denormalized TOC for instant chapter lists
+  collections?: string[]; // User labels, e.g. "Completed", "To read", "Comedy"
 }
 
 export interface Chapter {

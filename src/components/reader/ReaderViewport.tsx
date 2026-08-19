@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { AudioLines, ChevronRight, StickyNote } from 'lucide-react';
 import { db, type Chapter, type Note } from '../../db/db';
@@ -29,6 +38,8 @@ interface ReaderViewportProps {
   startChapter: number;
   startParagraph: number;
   infinite: boolean;
+  /** Paged mode: tap the left/right edges to flip a viewport-sized "page". */
+  paged: boolean;
   /** Owns reading progress (gated to the audio position while TTS is active). */
   onPositionChange: (chapterIndex: number, paragraphIndex: number, chapterLength: number) => void;
   /** Always fires with what's visibly on screen — drives the status bar. */
@@ -59,6 +70,7 @@ export const ReaderViewport = memo(function ReaderViewport({
   startChapter,
   startParagraph,
   infinite,
+  paged,
   onPositionChange,
   onViewedChange,
   onRequestChapter,
@@ -302,6 +314,49 @@ export const ReaderViewport = memo(function ReaderViewport({
     }
   }, [ttsActive, detached]);
 
+  /* ------------------ paged mode: edge taps flip a page ------------------ */
+
+  /**
+   * Flip one "page": scroll by a viewport height minus two lines of overlap so
+   * the last lines of the old page lead the new one. Instant (no smooth) so it
+   * reads as a page turn, not a scroll.
+   */
+  const pageBy = useCallback(
+    (dir: 1 | -1) => {
+      const root = containerRef.current;
+      if (!root) return;
+      const linePx = fontSize * lineHeight;
+      const delta = Math.max(root.clientHeight - linePx * 2, root.clientHeight * 0.5);
+      root.scrollBy({ top: dir * delta, behavior: 'auto' });
+    },
+    [fontSize, lineHeight],
+  );
+
+  /**
+   * Edge taps flip pages; the middle band keeps its normal behaviour (chrome
+   * toggle, double-tap-to-seek). Implemented as a click handler rather than
+   * overlay divs so touch-drag scrolling still works across the whole screen.
+   */
+  const handlePagedClick = useCallback(
+    (e: MouseEvent<HTMLDivElement>): void => {
+      if (!paged) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return; // user is selecting text
+      const root = containerRef.current;
+      if (!root) return;
+      const rect = root.getBoundingClientRect();
+      const frac = (e.clientX - rect.left) / Math.max(rect.width, 1);
+      if (frac < 0.28) {
+        e.stopPropagation(); // don't toggle the chrome
+        pageBy(-1);
+      } else if (frac > 0.72) {
+        e.stopPropagation();
+        pageBy(1);
+      }
+    },
+    [paged, pageBy],
+  );
+
   /* ------------------- double-tap to seek (touch-safe) ------------------ */
 
   const handleParagraphTap = (chapterIdx: number, paragraphIdx: number): void => {
@@ -474,6 +529,7 @@ export const ReaderViewport = memo(function ReaderViewport({
       <div
         ref={containerRef}
         onPointerUp={() => window.setTimeout(computeSelection, 50)}
+        onClick={handlePagedClick}
         className="no-scrollbar h-full overflow-y-auto"
         style={{
           backgroundColor: 'var(--reader-bg)',

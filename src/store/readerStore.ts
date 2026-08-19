@@ -29,6 +29,7 @@ interface ReaderState {
   lineHeight: number; // unitless multiplier
   theme: ReaderTheme;
   infiniteScroll: boolean; // chapters flow into each other as one page
+  pagedMode: boolean; // tap left/right edges to flip page-sized steps
   uiMode: UiMode; // whole-app light/dark
   accent: AccentId; // whole-app accent colour
   // Session position (synced to db.progress by ReaderPage)
@@ -40,6 +41,7 @@ interface ReaderState {
   setLineHeight: (lineHeight: number) => void;
   setTheme: (theme: ReaderTheme) => void;
   setInfiniteScroll: (infiniteScroll: boolean) => void;
+  setPagedMode: (pagedMode: boolean) => void;
   setUiMode: (uiMode: UiMode) => void;
   setAccent: (accent: AccentId) => void;
   openNovel: (novelId: string, chapterIndex: number, paragraphIndex: number) => void;
@@ -56,6 +58,7 @@ export const useReaderStore = create<ReaderState>()(
       lineHeight: 1.7,
       theme: 'dark',
       infiniteScroll: true,
+      pagedMode: false,
       uiMode: 'dark',
       accent: 'emerald',
       currentNovelId: null,
@@ -66,6 +69,7 @@ export const useReaderStore = create<ReaderState>()(
       setLineHeight: (lineHeight) => set({ lineHeight }),
       setTheme: (theme) => set({ theme }),
       setInfiniteScroll: (infiniteScroll) => set({ infiniteScroll }),
+      setPagedMode: (pagedMode) => set({ pagedMode }),
       setUiMode: (uiMode) => set({ uiMode }),
       setAccent: (accent) => set({ accent }),
       openNovel: (currentNovelId, currentChapterIndex, currentParagraphIndex) =>
@@ -83,6 +87,7 @@ export const useReaderStore = create<ReaderState>()(
         lineHeight: s.lineHeight,
         theme: s.theme,
         infiniteScroll: s.infiniteScroll,
+        pagedMode: s.pagedMode,
         uiMode: s.uiMode,
         accent: s.accent,
       }),

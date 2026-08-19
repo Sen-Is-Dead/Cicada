@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2, StickyNote, Trash2, Download } from 'lucide-react';
+import { ChevronLeft, BookOpen, Star, Play, Pencil, Loader2, LocateFixed, Search, StickyNote, Trash2, Download, X } from 'lucide-react';
 import { db } from '../../db/db';
 import { EditBookModal } from './EditBookModal';
 import { exportNovelBackup } from '../../lib/backup';
@@ -40,6 +40,32 @@ export function BookDetailPage() {
   const [exporting, setExporting] = useState(false);
   const [bookEtaMs, setBookEtaMs] = useState<number | null>(null);
   const backfillingRef = useRef(false);
+
+  /* --------------- chapter search / quick jump (#6) --------------- */
+  const [query, setQuery] = useState('');
+  /** Chapter index we're navigating the list to (waits for the list to grow). */
+  const [pendingJump, setPendingJump] = useState<number | null>(null);
+  /** Briefly highlighted row after a jump. */
+  const [flash, setFlash] = useState<number | null>(null);
+
+  const jumpToChapter = (index: number): void => {
+    setQuery('');
+    setListCount((c) => Math.max(c, Math.ceil((index + 20) / LIST_CHUNK) * LIST_CHUNK));
+    setPendingJump(index);
+  };
+
+  // Once the row exists in the DOM, scroll it into view and flash it
+  useEffect(() => {
+    if (pendingJump === null || titles === null) return;
+    if (listCount <= pendingJump) return; // list still growing
+    const el = document.getElementById(`chapter-row-${pendingJump}`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    setFlash(pendingJump);
+    setPendingJump(null);
+    const t = window.setTimeout(() => setFlash(null), 2000);
+    return () => window.clearTimeout(t);
+  }, [pendingJump, listCount, titles]);
 
   useEffect(() => {
     if (!novel?.coverImage) {
@@ -149,6 +175,31 @@ export function BookDetailPage() {
   const hasProgress =
     !!progress && (progress.currentChapterIndex > 0 || progress.currentParagraphIndex > 0);
   const currentChapter = progress?.currentChapterIndex ?? 0;
+
+  /* Derived search results for the chapter list */
+  const q = query.trim();
+  const numericQuery = /^\d+$/.test(q)
+    ? Math.min(Math.max(Number(q), 1), novel.totalChapters)
+    : null;
+  const filtering = q.length > 0;
+  let chapterRows: number[] = [];
+  if (titles !== null) {
+    if (numericQuery !== null) {
+      // A number shows the neighbourhood around that chapter ("look around there")
+      const center = numericQuery - 1;
+      const from = Math.max(0, center - 3);
+      const to = Math.min(titles.length, center + 21);
+      for (let i = from; i < to; i++) chapterRows.push(i);
+    } else if (filtering) {
+      const needle = q.toLowerCase();
+      for (let i = 0; i < titles.length && chapterRows.length < 300; i++) {
+        const label = titles[i] || `Chapter ${i + 1}`;
+        if (label.toLowerCase().includes(needle)) chapterRows.push(i);
+      }
+    } else {
+      chapterRows = Array.from({ length: Math.min(listCount, titles.length) }, (_, i) => i);
+    }
+  }
 
   return (
     <main className="mx-auto flex h-full w-full max-w-3xl flex-col">
@@ -291,9 +342,58 @@ export function BookDetailPage() {
         )}
 
         {/* Chapter list */}
-        <h2 className="px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-faint">
-          Chapters
-        </h2>
+        <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-faint">Chapters</h2>
+          {hasProgress && titles !== null && (
+            <button
+              onClick={() => jumpToChapter(currentChapter)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-accent hover:bg-surface2"
+            >
+              <LocateFixed className="h-3.5 w-3.5" aria-hidden="true" />
+              Current — Ch. {currentChapter + 1}
+            </button>
+          )}
+        </div>
+        {/* Search: text filters by title; a number (e.g. 100) shows the
+            chapters around it — Enter jumps straight to it in the full list */}
+        <div className="px-4 pb-2">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && numericQuery !== null) jumpToChapter(numericQuery - 1);
+              }}
+              placeholder="Search chapters — title, or a number like 100"
+              aria-label="Search chapters"
+              className="w-full rounded-lg border border-edge bg-surface py-1.5 pl-8 pr-8 text-sm text-main outline-none placeholder:text-faint focus:border-accent"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                aria-label="Clear chapter search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-faint hover:text-main"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+        {numericQuery !== null && (
+          <div className="px-4 pb-1">
+            <button
+              onClick={() => jumpToChapter(numericQuery - 1)}
+              className="w-full rounded-lg border border-accent/40 px-3 py-1.5 text-center text-xs text-accent hover:bg-surface2"
+            >
+              Go to chapter {numericQuery} in the full list
+            </button>
+          </div>
+        )}
         {titles === null ? (
           <div className="flex items-center gap-2 px-4 py-6 text-sm text-faint">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -301,23 +401,29 @@ export function BookDetailPage() {
           </div>
         ) : (
           <ul className="pb-8">
-            {titles.slice(0, listCount).map((title, i) => (
-              <li key={i}>
+            {chapterRows.map((i) => (
+              <li key={i} id={`chapter-row-${i}`}>
                 <Link
                   to={`/reader/${novel.id}?chapter=${i}`}
                   className={cn(
                     'flex items-baseline gap-3 border-b border-edge/60 px-4 py-2.5 text-sm transition-colors hover:bg-surface',
+                    flash === i && 'bg-accent/15',
                     hasProgress && i === currentChapter
                       ? 'text-accent'
                       : 'text-muted',
                   )}
                 >
                   <span className="w-10 shrink-0 text-right text-xs text-faint">{i + 1}</span>
-                  <span className="min-w-0 flex-1 truncate">{title || `Chapter ${i + 1}`}</span>
+                  <span className="min-w-0 flex-1 truncate">{titles[i] || `Chapter ${i + 1}`}</span>
                 </Link>
               </li>
             ))}
-            {listCount < titles.length && (
+            {filtering && chapterRows.length === 0 && (
+              <li className="px-4 py-4 text-center text-xs text-faint">
+                No chapters match "{query.trim()}".
+              </li>
+            )}
+            {!filtering && listCount < titles.length && (
               <li className="px-4 py-3 text-center text-xs text-faint">
                 Scroll for more ({titles.length - listCount} remaining)
               </li>
