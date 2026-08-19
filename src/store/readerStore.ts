@@ -60,7 +60,7 @@ export const useReaderStore = create<ReaderState>()(
       infiniteScroll: true,
       pagedMode: false,
       uiMode: 'dark',
-      accent: 'emerald',
+      accent: 'red',
       currentNovelId: null,
       currentChapterIndex: 0,
       currentParagraphIndex: 0,
@@ -82,6 +82,15 @@ export const useReaderStore = create<ReaderState>()(
     }),
     {
       name: 'cicada-reader-settings',
+      // v1: the app's default accent moved emerald → red. Existing installs
+      // that were still on the old default are carried over once (anyone can
+      // still pick green again in Appearance settings afterwards).
+      version: 1,
+      migrate: (persisted, version) => {
+        const s = persisted as Partial<ReaderState>;
+        if (version < 1 && s.accent === 'emerald') s.accent = 'red';
+        return s as ReaderState;
+      },
       partialize: (s) => ({
         fontSize: s.fontSize,
         lineHeight: s.lineHeight,

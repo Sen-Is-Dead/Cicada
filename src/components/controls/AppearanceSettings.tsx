@@ -9,8 +9,8 @@ interface AppearanceSettingsProps {
 }
 
 const ACCENTS: { id: AccentId; label: string; hex: string }[] = [
-  { id: 'emerald', label: 'Green', hex: '#10b981' },
   { id: 'red', label: 'Red', hex: '#ef4444' },
+  { id: 'emerald', label: 'Green', hex: '#10b981' },
   { id: 'sky', label: 'Light blue', hex: '#38bdf8' },
   { id: 'blue', label: 'Dark blue', hex: '#2563eb' },
   { id: 'pink', label: 'Pink', hex: '#ec4899' },

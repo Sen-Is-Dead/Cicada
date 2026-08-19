@@ -68,18 +68,18 @@ body {
   --c-faint: 168 162 158;
 }
 
-/* Accent palettes (set via data-accent on <html>) */
+/* Accent palettes (set via data-accent on <html>) — red is the app default */
 :root,
-[data-accent='emerald'] {
-  --c-accent: 16 185 129;
-  --c-accent-hov: 52 211 153;
-  --c-on-accent: 9 9 11;
-}
-
 [data-accent='red'] {
   --c-accent: 239 68 68;
   --c-accent-hov: 248 113 113;
   --c-on-accent: 255 255 255;
+}
+
+[data-accent='emerald'] {
+  --c-accent: 16 185 129;
+  --c-accent-hov: 52 211 153;
+  --c-on-accent: 9 9 11;
 }
 
 [data-accent='sky'] {
